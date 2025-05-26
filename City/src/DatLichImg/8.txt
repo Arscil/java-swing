@@ -1,0 +1,10 @@
+Mã yêu cầu: 8
+Mã chủ thải: 1
+Ngày bắt đầu: 28/05/2025
+Giờ thu gom: 7:00
+Dịch vụ: Thu gom rác điện tử - 20,000đ/Kg
+Địa chỉ thu gom: phường Đông Hưng Thuận
+Khối lượng: 16.0 kg
+Ghi chú: Ghi chú 1
+Thành tiền: 320,000 đ
+Ngày kết thúc: 27/08/2025

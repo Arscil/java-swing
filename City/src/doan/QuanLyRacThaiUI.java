@@ -4308,12 +4308,10 @@ private String getTenTruongNhomByMa(int ma) {
 
         // ChiTietHopDong Table
         String[] chiTietColumns = {
-            "Mã hợp đồng",
-            "Mã dịch vụ",
-          
-            
+            "Tên dịch vụ",
+            "Đơn vị tính",
             "Khối lượng",
-            
+            "Đơn giá",
             "Thành tiền",
             "Ghi chú"
         };
@@ -4432,33 +4430,22 @@ private String getTenTruongNhomByMa(int ma) {
         model.setRowCount(0); // Xóa dữ liệu cũ
         try {
             Connection conn = ConnectionJDBC.getConnection();
-            String sql = "SELECT * FROM ChiTietHopDong WHERE MaHopDong = ?";
+            String sql = "SELECT dv.TenDichVu, dv.DonViTinh, ct.KhoiLuong, dv.DonGia, ct.ThanhTien, ct.GhiChu " +
+                        "FROM ChiTietHopDong ct " +
+                        "JOIN DichVu dv ON ct.MaDichVu = dv.MaDichVu " +
+                        "WHERE ct.MaHopDong = ?";
             
             try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
                 pstmt.setInt(1, Integer.parseInt(maHopDong));
                 ResultSet rs = pstmt.executeQuery();
                 
-//                while (rs.next()) {
-//                    Object[] row = {
-//                        rs.getString("MaHopDong"),
-//                        rs.getString("DiaChiThuGom"),
-//                        rs.getString("TenDichVu"),
-//                        rs.getString("DonViTinh"),
-//                        String.format("%,.2f", rs.getDouble("DonGia")),
-//                        rs.getInt("SoLuong"),
-//                        String.format("%,.2f", rs.getDouble("ThanhTien")),
-//                        rs.getString("GhiChu")
-//                    };
-//                    model.addRow(row);
-//                }
-                 while (rs.next()) {
+                while (rs.next()) {
                     Object[] row = {
-                        rs.getString("MaHopDong"),
-                        rs.getString("MaDichVu"),
-                       
-                        
-                        rs.getInt("KhoiLuong"),
-                        String.format("%,.2f", rs.getDouble("ThanhTien")),
+                        rs.getString("TenDichVu"),
+                        rs.getString("DonViTinh"),
+                        String.format("%,d", rs.getInt("KhoiLuong")),
+                        String.format("%,.0f đ", rs.getDouble("DonGia")),
+                        String.format("%,.0f đ", rs.getDouble("ThanhTien")),
                         rs.getString("GhiChu")
                     };
                     model.addRow(row);

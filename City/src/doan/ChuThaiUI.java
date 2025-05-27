@@ -57,7 +57,10 @@ import javax.swing.event.ChangeListener;
 import java.awt.event.KeyEvent;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.text.Normalizer;
+import java.io.File;
+import java.sql.Statement;
+import java.util.function.Consumer;
+import javax.swing.table.TableColumnModel;
 
 public class ChuThaiUI extends JFrame {
     private JPanel sideBar, mainPanel;
@@ -65,25 +68,38 @@ public class ChuThaiUI extends JFrame {
     private String tenKhachHang;
     private String maKhachHang;
     private JTable invoiceTable;
-    private double maxWeight;
-    private JLabel totalLabel;
-    // Change serviceIds to store integers
-    private Map<String, Integer> serviceIds;
-    private Map<String, Double> servicePrices;
+    private double maxWeight; // Add this as a class field
+    private JLabel totalLabel; // Add totalLabel as a class field
 
     public ChuThaiUI(String tenKhachHang, String maKhachHang) {
         this.tenKhachHang = tenKhachHang;
         this.maKhachHang = maKhachHang;
-        this.serviceIds = new HashMap<>();
-        this.servicePrices = new HashMap<>();
+        // Set maxWeight based on user type
+        try {
+            Connection conn = ConnectionJDBC.getConnection();
+            String sql = "SELECT LoaiChuThai FROM ChuThai WHERE MaChuThai = ?";
+            PreparedStatement pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, maKhachHang);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                String loaiChuThai = rs.getString("LoaiChuThai");
+                this.maxWeight = "Cá nhân".equals(loaiChuThai) ? 100.0 : 1000.0; // 100kg for individual, 1000kg for business
+            }
+            rs.close();
+            pstmt.close();
+            conn.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+            this.maxWeight = 100.0; // Default to individual limit if error
+        }
         initComponents();
-        setLocationRelativeTo(null);
     }
 
     private void initComponents() {
         setTitle("Hệ thống quản lý rác thải - Giao diện chủ thải");
         setSize(1000, 600);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
         setLayout(new BorderLayout());
 
         // Tạo sidebar
@@ -164,55 +180,191 @@ public class ChuThaiUI extends JFrame {
         panel.add(titleLabel, BorderLayout.NORTH);
 
         // Form đặt lịch
-        JPanel formPanel = new JPanel(new GridLayout(8, 2, 10, 10));
+        JPanel formPanel = new JPanel(new GridLayout(10, 2, 10, 10));
         formPanel.setBorder(new EmptyBorder(20, 50, 20, 50));
 
-        formPanel.add(new JLabel("Ngày bắt đầu thu gom:"));
-        JSpinner dateSpinner = createDateSpinner(); // Use the helper method
-        formPanel.add(dateSpinner);
-
-        formPanel.add(new JLabel("Giờ thu gom:"));
-        String[] times = {"7:00", "8:00", "9:00", "10:00", "14:00", "15:00", "16:00"};
-        JComboBox<String> timeBox = new JComboBox<>(times);
-        formPanel.add(timeBox);
-
-        formPanel.add(new JLabel("Chọn dịch vụ:"));
-        JComboBox<String> serviceBox = new JComboBox<>();
+        // Chọn quận
+        formPanel.add(new JLabel("Chọn quận:"));
+        JComboBox<String> districtBox = new JComboBox<>();
+        districtBox.addItem("-- Chọn quận --");
+        // Load danh sách quận
         try {
             Connection conn = ConnectionJDBC.getConnection();
-            String sql = "SELECT MaDichVu, TenDichVu, DonViTinh, DonGia FROM DICHVU";
+            String sql = "SELECT TenQuan FROM Quan ORDER BY TenQuan";
             PreparedStatement pstmt = conn.prepareStatement(sql);
             ResultSet rs = pstmt.executeQuery();
             while (rs.next()) {
-                int maDichVu = rs.getInt("MaDichVu");
-                String serviceName = rs.getString("TenDichVu");
-                String unit = rs.getString("DonViTinh");
-                double price = rs.getDouble("DonGia");
-                String displayText = serviceName + " - " + price + " VNĐ/" + unit;
-                serviceBox.addItem(displayText);
-                servicePrices.put(displayText, price);
-                serviceIds.put(displayText, maDichVu);
+                districtBox.addItem(rs.getString("TenQuan"));
             }
             rs.close();
             pstmt.close();
             conn.close();
         } catch (SQLException e) {
             e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Lỗi khi tải danh sách dịch vụ: " + e.getMessage());
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi tải danh sách quận: " + e.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
         }
+        formPanel.add(districtBox);
+
+        // Chọn tuyến đường
+        formPanel.add(new JLabel("Chọn tuyến đường:"));
+        JComboBox<String> routeBox = new JComboBox<>();
+        routeBox.addItem("-- Chọn tuyến đường --");
+        routeBox.setEnabled(false);
+        formPanel.add(routeBox);
+
+        // Tạo các trường nhập liệu
+        JSpinner dateSpinner = createDateSpinner();
+        JComboBox<String> timeBox = new JComboBox<>(new String[]{"7:00", "8:00", "9:00", "10:00", "14:00", "15:00", "16:00"});
+        JComboBox<String> serviceBox = new JComboBox<>();
+        JTextField weightField = new JTextField("0,0");
+        totalLabel = new JLabel("0 đ");
+        JTextField noteField = new JTextField();
+        JTextField addressDetailField = new JTextField();
+        SpinnerNumberModel durationModel = new SpinnerNumberModel(1, 1, 60, 1);
+        JSpinner durationSpinner = new JSpinner(durationModel);
+        JComboBox<String> timeUnitBox = new JComboBox<>(new String[]{"Tháng", "Năm"});
+        JLabel endDateLabel = new JLabel("");
+
+        // Disable tất cả các trường nhập liệu ban đầu
+        dateSpinner.setEnabled(false);
+        timeBox.setEnabled(false);
+        serviceBox.setEnabled(false);
+        weightField.setEnabled(false);
+        noteField.setEnabled(false);
+        addressDetailField.setEnabled(false);
+        durationSpinner.setEnabled(false);
+        timeUnitBox.setEnabled(false);
+
+        // Load dịch vụ
+        Map<String, Double> servicePrices = new HashMap<>();
+        try {
+            Connection conn = ConnectionJDBC.getConnection();
+            String sql = "SELECT MaDichVu, TenDichVu, DonViTinh, DonGia FROM DICHVU";
+            PreparedStatement pstmt = conn.prepareStatement(sql);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String serviceName = rs.getString("TenDichVu");
+                String unit = rs.getString("DonViTinh");
+                double price = rs.getDouble("DonGia");
+                servicePrices.put(serviceName, price);
+                serviceBox.addItem(serviceName + " - " + String.format("%,d", (int) price) + "đ/" + unit);
+            }
+            rs.close();
+            pstmt.close();
+            conn.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi tải danh sách dịch vụ: " + e.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+        }
+
+        // Thêm listener cho combobox quận
+        districtBox.addActionListener(e -> {
+            String selectedDistrict = (String) districtBox.getSelectedItem();
+            routeBox.removeAllItems();
+            routeBox.addItem("-- Chọn tuyến đường --");
+            
+            if (selectedDistrict != null && !selectedDistrict.equals("-- Chọn quận --")) {
+                try {
+                    Connection conn = ConnectionJDBC.getConnection();
+                    String sql = "SELECT t.TenTuyen FROM TuyenDuongThuGom t " +
+                               "JOIN Quan q ON t.KhuVuc = q.MaQuan " +
+                               "WHERE q.TenQuan = ? " +
+                               "ORDER BY t.TenTuyen";
+                    PreparedStatement pstmt = conn.prepareStatement(sql);
+                    pstmt.setString(1, selectedDistrict);
+                    ResultSet rs = pstmt.executeQuery();
+                    boolean hasRoutes = false;
+                    while (rs.next()) {
+                        routeBox.addItem(rs.getString("TenTuyen"));
+                        hasRoutes = true;
+                    }
+                    routeBox.setEnabled(hasRoutes);
+                    rs.close();
+                    pstmt.close();
+                    conn.close();
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                    JOptionPane.showMessageDialog(this,
+                        "Lỗi khi tải danh sách tuyến đường: " + ex.getMessage(),
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                }
+            } else {
+                routeBox.setEnabled(false);
+                // Disable tất cả các trường nhập liệu
+                dateSpinner.setEnabled(false);
+                timeBox.setEnabled(false);
+                serviceBox.setEnabled(false);
+                weightField.setEnabled(false);
+                noteField.setEnabled(false);
+                durationSpinner.setEnabled(false);
+                timeUnitBox.setEnabled(false);
+            }
+        });
+
+        // Thêm listener cho combobox tuyến đường
+        routeBox.addActionListener(e -> {
+            String selectedRoute = (String) routeBox.getSelectedItem();
+            boolean enableFields = selectedRoute != null && !selectedRoute.equals("-- Chọn tuyến đường --");
+            
+            // Enable/disable các trường nhập liệu
+            dateSpinner.setEnabled(enableFields);
+            timeBox.setEnabled(enableFields);
+            serviceBox.setEnabled(enableFields);
+            weightField.setEnabled(enableFields);
+            noteField.setEnabled(enableFields);
+            durationSpinner.setEnabled(enableFields);
+            timeUnitBox.setEnabled(enableFields);
+            addressDetailField.setEnabled(enableFields);
+            
+            if (!enableFields) {
+                // Reset các giá trị
+                weightField.setText("0,0");
+                noteField.setText("");
+                addressDetailField.setText("");
+                totalLabel.setText("0 đ");
+            }
+        });
+
+        // Thêm các trường vào form
+        formPanel.add(new JLabel("Ngày bắt đầu thu gom:"));
+        formPanel.add(dateSpinner);
+
+        formPanel.add(new JLabel("Giờ thu gom:"));
+        formPanel.add(timeBox);
+
+        formPanel.add(new JLabel("Địa điểm chi tiết:"));
+        formPanel.add(addressDetailField);
+
+        formPanel.add(new JLabel("Chọn dịch vụ:"));
         formPanel.add(serviceBox);
 
-        formPanel.add(new JLabel("Địa chỉ thu gom:"));
-        JTextField addressField = new JTextField();
-        formPanel.add(addressField);
-
         formPanel.add(new JLabel("Khối lượng (kg):"));
-        JTextField weightField = new JTextField("0,0");
-        
-        // Khai báo các biến trước
-        totalLabel = new JLabel("0 đ");
+        formPanel.add(weightField);
 
-        // Khai báo updateTotal trước khi sử dụng trong listener
+        formPanel.add(new JLabel("Thành tiền:"));
+        formPanel.add(totalLabel);
+
+        formPanel.add(new JLabel("Ghi chú:"));
+        formPanel.add(noteField);
+
+        formPanel.add(new JLabel("Thời hạn:"));
+        // Tạo panel chứa các components thời hạn với BorderLayout
+        JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 1, 0));
+        durationSpinner.setPreferredSize(new Dimension(60, 25));
+        durationPanel.add(durationSpinner);
+        durationPanel.add(timeUnitBox);
+        durationPanel.add(endDateLabel);
+        durationPanel.setOpaque(false);
+        formPanel.add(durationPanel);
+
+        // Thêm xử lý tính tiền khi thay đổi khối lượng hoặc dịch vụ
         Runnable updateTotal = () -> {
             try {
                 String selectedService = (String) serviceBox.getSelectedItem();
@@ -221,7 +373,7 @@ public class ChuThaiUI extends JFrame {
                     if (!weightText.isEmpty()) {
                         double weight = Double.parseDouble(weightText);
                         String serviceName = selectedService.split(" - ")[0];
-                        double pricePerUnit = servicePrices.get(selectedService);
+                        double pricePerUnit = servicePrices.get(serviceName);
                         double total = weight * pricePerUnit;
                         totalLabel.setText(String.format("%,.0f đ", total));
                     }
@@ -231,7 +383,7 @@ public class ChuThaiUI extends JFrame {
             }
         };
 
-        // Sau đó mới thêm các listener sử dụng updateTotal
+        // Thêm các listeners cho việc tính tiền
         weightField.addKeyListener(new java.awt.event.KeyAdapter() {
             public void keyTyped(java.awt.event.KeyEvent e) {
                 char c = e.getKeyChar();
@@ -245,14 +397,36 @@ public class ChuThaiUI extends JFrame {
                     return;
                 }
             }
+            
+            @Override
+            public void keyReleased(java.awt.event.KeyEvent e) {
+                try {
+                    String weightText = weightField.getText().trim().replace(',', '.');
+                    if (!weightText.isEmpty()) {
+                        double weight = Double.parseDouble(weightText);
+                        String selectedService = (String) serviceBox.getSelectedItem();
+                        if (selectedService != null) {
+                            String serviceName = selectedService.split(" - ")[0];
+                            double pricePerUnit = servicePrices.get(serviceName);
+                            double total = weight * pricePerUnit;
+                            totalLabel.setText(String.format("%,.0f đ", total));
+                        }
+                    } else {
+                        totalLabel.setText("0 đ");
+                    }
+                } catch (NumberFormatException ex) {
+                    // Không làm gì khi có lỗi parse số
+                }
+            }
         });
+
         weightField.addFocusListener(new java.awt.event.FocusAdapter() {
             @Override
             public void focusLost(java.awt.event.FocusEvent evt) {
                 String text = weightField.getText().trim();
                 if (text.isEmpty()) {
                     weightField.setText("0,0");
-                    updateTotal.run();
+                    totalLabel.setText("0 đ");
                     return;
                 }
                 if (text.startsWith(",")) {
@@ -271,49 +445,27 @@ public class ChuThaiUI extends JFrame {
                     }
                 }
                 weightField.setText(text);
-                updateTotal.run();
+                
+                // Cập nhật thành tiền khi format lại text
+                try {
+                    String weightText = text.replace(',', '.');
+                    double weight = Double.parseDouble(weightText);
+                    String selectedService = (String) serviceBox.getSelectedItem();
+                    if (selectedService != null) {
+                        String serviceName = selectedService.split(" - ")[0];
+                        double pricePerUnit = servicePrices.get(serviceName);
+                        double total = weight * pricePerUnit;
+                        totalLabel.setText(String.format("%,.0f đ", total));
+                    }
+                } catch (NumberFormatException ex) {
+                    totalLabel.setText("0 đ");
+                }
             }
         });
+
         serviceBox.addActionListener(e -> updateTotal.run());
 
-        formPanel.add(weightField);
-
-        formPanel.add(new JLabel("Thành tiền:"));
-        formPanel.add(totalLabel);
-
-        formPanel.add(new JLabel("Ghi chú:"));
-        JTextField noteField = new JTextField();
-        formPanel.add(noteField);
-
-        formPanel.add(new JLabel("Thời hạn:"));
-        // Tạo panel chứa các components thời hạn với BorderLayout
-        JPanel durationPanel = new JPanel();
-        durationPanel.setLayout(new FlowLayout(FlowLayout.LEFT, 1, 0));
-        
-        // Spinner cho thời hạn
-        SpinnerNumberModel durationModel = new SpinnerNumberModel(1, 1, 60, 1);
-        JSpinner durationSpinner = new JSpinner(durationModel);
-        durationSpinner.setPreferredSize(new Dimension(60, 25));
-        
-        // ComboBox cho đơn vị thời gian
-        String[] timeUnits = {"Tháng", "Năm"};
-        JComboBox<String> timeUnitBox = new JComboBox<>(timeUnits);
-        
-        // Label hiển thị ngày kết thúc
-        JLabel endDateLabel = new JLabel("");
-        endDateLabel.setForeground(new Color(128, 128, 128));
-        
-        // Thêm các components vào durationPanel
-        durationPanel.add(durationSpinner);
-        durationPanel.add(timeUnitBox);
-        durationPanel.add(endDateLabel);
-        
-        // Đảm bảo panel có background trong suốt
-        durationPanel.setOpaque(false);
-        
-        formPanel.add(durationPanel);
-
-        // Cập nhật ngày kết thúc khi thay đổi thời hạn hoặc đơn vị
+        // Xử lý tính ngày kết thúc
         Runnable updateEndDate = () -> {
             try {
                 Date startDate = (Date) dateSpinner.getValue();
@@ -328,45 +480,78 @@ public class ChuThaiUI extends JFrame {
                 } else {
                     cal.add(Calendar.MONTH, duration);
                 }
-                
-                // Trừ đi 1 ngày để có ngày kết thúc chính xác
                 cal.add(Calendar.DAY_OF_MONTH, -1);
                 
                 SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy");
                 endDateLabel.setText("(Đến ngày: " + sdf.format(cal.getTime()) + ")");
+                endDateLabel.setForeground(new Color(128, 128, 128));
             } catch (Exception ex) {
                 endDateLabel.setText("");
             }
         };
-        
-        // Thêm listener cho spinner và combobox
+
+        // Thêm listeners cho việc tính ngày kếtthúc
         durationSpinner.addChangeListener(e -> updateEndDate.run());
         timeUnitBox.addActionListener(e -> {
-            // Cập nhật giới hạn dựa trên đơn vị được chọn
             String selectedUnit = (String) timeUnitBox.getSelectedItem();
             if ("Năm".equals(selectedUnit)) {
-                durationModel.setMaximum(5); // Tối đa 5 năm
+                durationModel.setMaximum(5);
                 if ((Integer)durationSpinner.getValue() > 5) {
                     durationSpinner.setValue(5);
                 }
             } else {
-                durationModel.setMaximum(60); // Tối đa 60 tháng
+                durationModel.setMaximum(60);
             }
             updateEndDate.run();
         });
-        
-        // Thêm listener cho dateSpinner
         dateSpinner.addChangeListener(e -> updateEndDate.run());
 
-        // Chạy lần đầu để hiển thị ngày kết thúc ban đầu
-        updateEndDate.run();
-
+        // Panel cho nút submit
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        JButton submitButton = new JButton("Xác nhận đặt lịch");
+        JButton submitButton = new JButton("Xác nhận");  // Add this line
         submitButton.setBackground(new Color(46, 204, 113));
         submitButton.setForeground(Color.WHITE);
         submitButton.addActionListener(e -> {
+            // Validate các trường bắt buộc
+            String selectedDistrict = (String) districtBox.getSelectedItem();
+            String selectedRoute = (String) routeBox.getSelectedItem();
+            String addressDetail = addressDetailField.getText().trim();
+            
+            if (selectedDistrict == null || selectedDistrict.equals("-- Chọn quận --")) {
+                JOptionPane.showMessageDialog(this,
+                    "Vui lòng chọn quận!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            if (selectedRoute == null || selectedRoute.equals("-- Chọn tuyến đường --")) {
+                JOptionPane.showMessageDialog(this,
+                    "Vui lòng chọn tuyến đường!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            if (addressDetail.isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                    "Vui lòng nhập địa điểm chi tiết!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            String selectedService = (String) serviceBox.getSelectedItem();
+            if (selectedService == null) {
+                JOptionPane.showMessageDialog(this,
+                    "Vui lòng chọn dịch vụ!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
             try {
+                // Validate khối lượng
                 String weightText = weightField.getText().trim().replace(',', '.');
                 if (weightText.isEmpty()) {
                     JOptionPane.showMessageDialog(this,
@@ -385,6 +570,15 @@ public class ChuThaiUI extends JFrame {
                     return;
                 }
 
+                // Kiểm tra giới hạn khối lượng dựa trên loại chủ thải
+                if (weight > maxWeight) {
+                    JOptionPane.showMessageDialog(this,
+                        "Khối lượng vượt quá giới hạn cho phép (" + maxWeight + " kg)!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
                 // Tính ngày kết thúc
                 Date startDate = (Date) dateSpinner.getValue();
                 int duration = (Integer) durationSpinner.getValue();
@@ -398,17 +592,20 @@ public class ChuThaiUI extends JFrame {
                 } else {
                     cal.add(Calendar.MONTH, duration);
                 }
-                // Trừ đi 1 ngày để có ngày kết thúc chính xác
                 cal.add(Calendar.DAY_OF_MONTH, -1);
                 Date endDate = cal.getTime();
 
+                // Tạo địa chỉ đầy đủ từ tuyến đường, quận và địa điểm chi tiết
+                String fullAddress = String.format("%s - %s - %s", addressDetail, selectedRoute, selectedDistrict);
+
+                // Gọi hàm submit với các thông tin đã validate
                 submitBooking(
                     startDate,
                     (String) timeBox.getSelectedItem(),
-                    (String) serviceBox.getSelectedItem(),
-                    addressField.getText(),
+                    selectedService,
+                    fullAddress,
                     weight,
-                    noteField.getText(),
+                    noteField.getText().trim(),
                     totalLabel.getText(),
                     endDate
                 );
@@ -432,12 +629,6 @@ public class ChuThaiUI extends JFrame {
     private void submitBooking(Date startDate, String time, String service, 
                              String address, double weight, String note, 
                              String total, Date endDate) {
-        // Validate input
-        if (address.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Vui lòng nhập địa chỉ thu gom!", "Lỗi", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
         // Kiểm tra ngày đặt lịch phải sau ngày hiện tại ít nhất 1 ngày
         Calendar today = Calendar.getInstance();
         today.add(Calendar.DAY_OF_MONTH, 1);
@@ -462,200 +653,98 @@ public class ChuThaiUI extends JFrame {
         }
 
         Connection conn = null;
-        PreparedStatement pstmt = null;
-
         try {
             conn = ConnectionJDBC.getConnection();
-            if (conn == null) {
-                JOptionPane.showMessageDialog(this, 
-                    "Không thể kết nối đến database!", 
-                    "Lỗi", 
-                    JOptionPane.ERROR_MESSAGE);
-                return;
-            }
-
-            // Tắt auto commit
             conn.setAutoCommit(false);
             
-            try {
-                // 1. Lấy mã yêu cầu từ sequence
-                String seqYeuCauSql = "SELECT SeqYeuCauDatLich.NEXTVAL FROM dual";
-                int maYeuCau;
-                try (PreparedStatement seqStmt = conn.prepareStatement(seqYeuCauSql)) {
-                    ResultSet rs = seqStmt.executeQuery();
-                    if (rs.next()) {
-                        maYeuCau = rs.getInt(1);
-                    } else {
-                        throw new SQLException("Không thể lấy mã yêu cầu tiếp theo");
-                    }
-                }
-                System.out.println("Generated MaYeuCau: " + maYeuCau);
-
-                // 2. Lấy mã hợp đồng từ sequence
-                String seqHopDongSql = "SELECT SeqHopDong.NEXTVAL FROM dual";
-                int maHopDong;
-                try (PreparedStatement seqHopDongStmt = conn.prepareStatement(seqHopDongSql)) {
-                    ResultSet rs = seqHopDongStmt.executeQuery();
-                    if (rs.next()) {
-                        maHopDong = rs.getInt(1);
-                    } else {
-                        throw new SQLException("Không thể lấy mã hợp đồng tiếp theo");
-                    }
-                }
-                System.out.println("Generated MaHopDong: " + maHopDong);
-
-                // 3. Thêm hợp đồng mới
-                String insertHopDongSql = "INSERT INTO HopDong (MaHopDong, MaChuThai, LoaiHopDong, NgBatDau, NgKetThuc, " +
-                                        "DiaChiThuGom, MoTa, TrangThai) " +
-                                        "VALUES (?, ?, 'Định kỳ', ?, ?, ?, ?, 'Chờ duyệt')";
-                int hopDongResult;
-                try (PreparedStatement hopDongStmt = conn.prepareStatement(insertHopDongSql)) {
-                    hopDongStmt.setInt(1, maHopDong);
-                    hopDongStmt.setString(2, maKhachHang);
-                    hopDongStmt.setDate(3, new java.sql.Date(startDate.getTime()));
-                    hopDongStmt.setDate(4, new java.sql.Date(endDate.getTime()));
-                    hopDongStmt.setString(5, address);
-                    hopDongStmt.setString(6, note);
-                    hopDongResult = hopDongStmt.executeUpdate();
-                    System.out.println("HopDong insert result: " + hopDongResult + " rows affected");
-                }
-
-                if (hopDongResult != 1) {
-                    throw new SQLException("Không thể thêm hợp đồng mới. Số dòng ảnh hưởng: " + hopDongResult);
-                }
-
-                // 4. Verify MaDichVu exists
-                String fullServiceString = service; // Format: "Tên dịch vụ - Đơn giá"
-                String serviceName = fullServiceString.split(" - ")[0].trim(); // Lấy phần tên dịch vụ
-                String normalizedServiceName = normalizeString(serviceName);
-
-                System.out.println("Full service string from combo box: " + fullServiceString);
-                System.out.println("Extracted service name: " + serviceName);
-                System.out.println("Normalized service name: " + normalizedServiceName);
-
-                // Tìm mã dịch vụ bằng cách so sánh chuỗi đã chuẩn hóa
-                Integer maDichVu = null;
-                for (Map.Entry<String, Integer> entry : serviceIds.entrySet()) {
-                    if (normalizeString(entry.getKey()).equals(normalizedServiceName)) {
-                        maDichVu = entry.getValue();
-                        break;
-                    }
-                }
-
-                if (maDichVu == null) {
-                    throw new SQLException("Không tìm thấy mã dịch vụ cho: " + serviceName);
-                }
-
-                String checkDichVuSql = "SELECT COUNT(*) FROM DichVu WHERE MaDichVu = ?";
-                try (PreparedStatement checkDichVuStmt = conn.prepareStatement(checkDichVuSql)) {
-                    checkDichVuStmt.setInt(1, maDichVu);
-                    ResultSet rs = checkDichVuStmt.executeQuery();
-                    if (rs.next() && rs.getInt(1) == 0) {
-                        throw new SQLException("Mã dịch vụ không tồn tại trong database: " + maDichVu);
-                    }
-                }
-
-                // 5. Thêm chi tiết hợp đồng với cùng mã hợp đồng
-                double donGia = servicePrices.get(serviceName); // Sử dụng tên dịch vụ đã tách
-                String insertChiTietSql = "INSERT INTO ChiTietHopDong (MaHopDong, MaDichVu, KhoiLuong, ThanhTien, GhiChu) " +
-                                        "VALUES (?, ?, ?, ?, ?)";
-                int chiTietResult;
-                try (PreparedStatement chiTietStmt = conn.prepareStatement(insertChiTietSql)) {
-                    chiTietStmt.setInt(1, maHopDong);
-                    chiTietStmt.setInt(2, maDichVu);
-                    chiTietStmt.setDouble(3, weight);
-                    chiTietStmt.setDouble(4, weight * donGia);
-                    chiTietStmt.setString(5, note);
-                    chiTietResult = chiTietStmt.executeUpdate();
-                    System.out.println("ChiTietHopDong insert result: " + chiTietResult + " rows affected");
-                }
-
-                if (chiTietResult != 1) {
-                    throw new SQLException("Không thể thêm chi tiết hợp đồng. Số dòng ảnh hưởng: " + chiTietResult);
-                }
-
-                // 6. Thêm yêu cầu đặt lịch
-                String insertYeuCauSql = "INSERT INTO YeuCauDatLich (MaYc, MaChuThai, MaLich, ThoiGianYc, GhiChu, TrangThai) " +
-                               "VALUES (?, ?, NULL, SYSDATE, ?, 'Đang xử lí')";
-                int yeuCauResult;
-                try (PreparedStatement yeuCauStmt = conn.prepareStatement(insertYeuCauSql)) {
-                    yeuCauStmt.setInt(1, maYeuCau);
-                    yeuCauStmt.setString(2, maKhachHang);
-                    yeuCauStmt.setString(3, note);
-                    yeuCauResult = yeuCauStmt.executeUpdate();
-                    System.out.println("YeuCauDatLich insert result: " + yeuCauResult + " rows affected");
-                }
-
-                if (yeuCauResult != 1) {
-                    throw new SQLException("Không thể thêm yêu cầu đặt lịch. Số dòng ảnh hưởng: " + yeuCauResult);
-                }
-
-                // 7. Lưu thông tin vào file txt
-                String fileName = "src/DatLichImg/" + maYeuCau + ".txt";
-                try (FileWriter writer = new FileWriter(fileName)) {
-                    writer.write("Mã yêu cầu: " + maYeuCau + "\n");
-                    writer.write("Mã chủ thải: " + maKhachHang + "\n");
-                    writer.write("Mã hợp đồng: " + maHopDong + "\n");
-                    writer.write("Ngày bắt đầu: " + new SimpleDateFormat("dd/MM/yyyy").format(startDate) + "\n");
-                    writer.write("Giờ thu gom: " + time + "\n");
-                    writer.write("Dịch vụ: " + service + "\n");
-                    writer.write("Địa chỉ thu gom: " + address + "\n");
-                    writer.write("Khối lượng: " + weight + " kg\n");
-                    writer.write("Ghi chú: " + note + "\n");
-                    writer.write("Thành tiền: " + total + "\n");
-                    writer.write("Ngày kết thúc: " + new SimpleDateFormat("dd/MM/yyyy").format(endDate) + "\n");
-                }
-
-                // Commit tất cả các thay đổi
-                conn.commit();
-                System.out.println("Toàn bộ transaction đã được commit thành công");
+            // 1. Create HopDong record
+            String insertHopDongSql = "INSERT INTO HopDong (MaChuThai, LoaiHopDong, NgBatDau, NgKetThuc, DiaChiThuGom, TrangThai) " +
+                                    "VALUES (?, ?, ?, ?, ?, 'Chờ duyệt')";
+            
+                int maHopDongValue;
+            try (PreparedStatement pstmt = conn.prepareStatement(insertHopDongSql, new String[]{"MaHopDong"})) {
+                pstmt.setString(1, maKhachHang);
+                long durationInDays = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+                String contractType = durationInDays > 180 ? "Dài hạn" : "Ngắn hạn";
+                pstmt.setString(2, contractType);
+                pstmt.setDate(3, new java.sql.Date(startDate.getTime()));
+                pstmt.setDate(4, new java.sql.Date(endDate.getTime()));
+                pstmt.setString(5, address);
                 
-                JOptionPane.showMessageDialog(this, 
-                    "Đặt lịch thành công!", 
-                    "Thông báo", 
-                    JOptionPane.INFORMATION_MESSAGE);
-                clearBookingForm();
-            } catch (SQLException | IOException ex) {
-                // Rollback nếu có lỗi
-                if (conn != null) {
-                    conn.rollback();
-                    System.out.println("Transaction đã được rollback do lỗi: " + ex.getMessage());
-                }
-                throw ex;
-            } finally {
-                // Đóng PreparedStatement
-                if (pstmt != null) {
-                    try {
-                        pstmt.close();
-                    } catch (SQLException e) {
-                        e.printStackTrace();
-                    }
+                int result = pstmt.executeUpdate();
+                if (result <= 0) {
+                    throw new SQLException("Không thể tạo hợp đồng");
                 }
                 
-                // Bật lại auto commit và đóng connection
-                if (conn != null) {
-                    try {
-                        conn.setAutoCommit(true);
-                        conn.close();
-                        System.out.println("Connection đã được đóng");
-                    } catch (SQLException e) {
-                        e.printStackTrace();
+                ResultSet rs = pstmt.getGeneratedKeys();
+                    if (rs.next()) {
+                    maHopDongValue = rs.getInt(1);
+                    } else {
+                    throw new SQLException("Không thể lấy mã hợp đồng");
                     }
+                }
+
+            // 2. Get MaDichVu
+            String findServiceSql = "SELECT MaDichVu FROM DichVu WHERE TenDichVu = ?";
+            int maDichVu;
+            try (PreparedStatement pstmt = conn.prepareStatement(findServiceSql)) {
+                String serviceName = service.split(" - ")[0];
+                pstmt.setString(1, serviceName);
+                ResultSet rs = pstmt.executeQuery();
+                    if (rs.next()) {
+                    maDichVu = rs.getInt("MaDichVu");
+                    } else {
+                    throw new SQLException("Không tìm thấy dịch vụ");
                 }
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
-            System.out.println("Lỗi SQL: " + e.getMessage());
-            JOptionPane.showMessageDialog(this, 
-                "Lỗi khi đặt lịch: " + e.getMessage(), 
-                "Lỗi", 
-                JOptionPane.ERROR_MESSAGE);
-        } catch (IOException e) {
-            e.printStackTrace();
+
+            // 3. Create ChiTietHopDong record
+            String insertChiTietSql = "INSERT INTO ChiTietHopDong (MaHopDong, MaDichVu, KhoiLuong, ThanhTien, GhiChu) " +
+                                    "VALUES (?, ?, ?, ?, ?)";
+            try (PreparedStatement pstmt = conn.prepareStatement(insertChiTietSql)) {
+                    String totalAmount = total.replaceAll("[^0-9]", "");
+                    double totalValue = Double.parseDouble(totalAmount);
+                
+                pstmt.setInt(1, maHopDongValue);
+                pstmt.setInt(2, maDichVu);
+                pstmt.setDouble(3, weight);
+                pstmt.setDouble(4, totalValue);
+                pstmt.setString(5, note);
+                
+                int result = pstmt.executeUpdate();
+                if (result <= 0) {
+                    throw new SQLException("Không thể thêm chi tiết hợp đồng");
+                }
+            }
+
+                    conn.commit();
+                    JOptionPane.showMessageDialog(this, 
+                "Đăng ký hợp đồng thành công!", 
+                        "Thông báo", 
+                        JOptionPane.INFORMATION_MESSAGE);
+                    clearBookingForm();
+
+            } catch (SQLException ex) {
+                if (conn != null) {
+                try {
+                    conn.rollback();
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                    }
+                }
+            ex.printStackTrace();
             JOptionPane.showMessageDialog(this,
-                "Lỗi khi lưu thông tin vào file: " + e.getMessage(),
+                "Lỗi khi tạo hợp đồng: " + ex.getMessage(),
                 "Lỗi",
                 JOptionPane.ERROR_MESSAGE);
+        } finally {
+                if (conn != null) {
+                    try {
+                        conn.close();
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                    }
+                }
         }
     }
 
@@ -981,60 +1070,43 @@ public class ChuThaiUI extends JFrame {
                     return;
                 }
 
+                // Tạo câu truy vấn SQL
                 StringBuilder sql = new StringBuilder(
-                    "SELECT yc.MaYc, yc.MaLich, yc.ThoiGianYc, yc.GhiChu, yc.TrangThai, " +
-                    "ltg.GioThu, dv.TenDichVu, cthd.KhoiLuong, cthd.DiaChiThuGom, " +
-                    "TO_CHAR(hd.NgBatDau, 'DD/MM/YYYY') as NgBatDau, " +
-                    "TO_CHAR(hd.NgKetThuc, 'DD/MM/YYYY') as NgKetThuc " +
-                    "FROM YeuCauDatLich yc " +
-                    "JOIN LichThuGom ltg ON yc.MaLich = ltg.MaLich " +
-                    "JOIN HopDong hd ON yc.MaChuThai = hd.MaChuThai " +
-                    "JOIN ChiTietHopDong cthd ON hd.MaHopDong = cthd.MaHopDong " +
-                    "JOIN DichVu dv ON cthd.MaDichVu = dv.MaDichVu " +
-                    "WHERE yc.MaChuThai = ? ");
+                    "SELECT MaYc, MaLich, ThoiGianYc, GhiChu, TrangThai " +
+                    "FROM YeuCauDatLich " +
+                    "WHERE MaChuThai = ? ");
 
-                List<Object> params = new ArrayList<>();
-                List<Integer> types = new ArrayList<>();
-                params.add(maKhachHang);
-                types.add(Types.VARCHAR);
-
-                // Only add ID condition if ID is provided
                 if (!maYc.isEmpty()) {
-                    sql.append("AND yc.MaYc = ? ");
-                    params.add(maYc);
-                    types.add(Types.VARCHAR);
+                    sql.append("AND MaYc = ? ");
                 }
                 // Add date condition if date is selected
                 if (ngayYc != null) {
-                    sql.append("AND TRUNC(yc.ThoiGianYc) = TRUNC(?) ");
-                    params.add(new Timestamp(ngayYc.getTime()));
-                    types.add(Types.TIMESTAMP);
+                    sql.append("AND TRUNC(ThoiGianYc) = TRUNC(?) ");
                 }
 
-                sql.append("ORDER BY yc.ThoiGianYc DESC");
+                sql.append("ORDER BY ThoiGianYc DESC");
 
                 model.setRowCount(0);
                 Connection conn = ConnectionJDBC.getConnection();
                 PreparedStatement pstmt = conn.prepareStatement(sql.toString());
                 
-                for (int i = 0; i < params.size(); i++) {
-                    pstmt.setObject(i + 1, params.get(i), types.get(i));
+                int paramIndex = 1;
+                pstmt.setString(paramIndex++, maKhachHang);
+                if (!maYc.isEmpty()) {
+                    pstmt.setString(paramIndex++, maYc);
+                }
+                if (ngayYc != null) {
+                    pstmt.setTimestamp(paramIndex++, new Timestamp(ngayYc.getTime()));
                 }
 
                 ResultSet rs = pstmt.executeQuery();
                 SimpleDateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm");
 
                 while (rs.next()) {
-                    String thoiHanHopDong = rs.getString("NgBatDau") + " - " + rs.getString("NgKetThuc");
-                    
                     model.addRow(new Object[]{
                         rs.getString("MaYc"),
+                        rs.getString("MaLich"),
                         dateFormat.format(rs.getTimestamp("ThoiGianYc")),
-                        rs.getString("TenDichVu"),
-                        rs.getDouble("KhoiLuong"),
-                        rs.getString("DiaChiThuGom"),
-                        rs.getString("GioThu"),
-                        thoiHanHopDong,
                         rs.getString("GhiChu"),
                         rs.getString("TrangThai")
                     });
@@ -1850,7 +1922,8 @@ public class ChuThaiUI extends JFrame {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton searchButton = new JButton("Tìm kiếm");
         JButton refreshButton = new JButton("Làm mới");
-        JButton editButton = new JButton("Sửa hợp đồng");
+        JButton addDetailButton = new JButton("Thêm chi tiết");
+        JButton editContractButton = new JButton("Sửa hợp đồng");
         JButton deleteButton = new JButton("Xóa hợp đồng");
         
         // Style buttons
@@ -1862,19 +1935,25 @@ public class ChuThaiUI extends JFrame {
         refreshButton.setForeground(Color.WHITE);
         refreshButton.setFocusPainted(false);
 
-        editButton.setBackground(new Color(46, 204, 113));
-        editButton.setForeground(Color.WHITE);
-        editButton.setFocusPainted(false);
-        editButton.setEnabled(false); // Ban đầu disable nút sửa
+        addDetailButton.setBackground(new Color(46, 204, 113));
+        addDetailButton.setForeground(Color.WHITE);
+        addDetailButton.setFocusPainted(false);
+        addDetailButton.setEnabled(false);
+
+        editContractButton.setBackground(new Color(241, 196, 15));
+        editContractButton.setForeground(Color.WHITE);
+        editContractButton.setFocusPainted(false);
+        editContractButton.setEnabled(false);
 
         deleteButton.setBackground(new Color(231, 76, 60));
         deleteButton.setForeground(Color.WHITE);
         deleteButton.setFocusPainted(false);
-        deleteButton.setEnabled(false); // Ban đầu disable nút xóa
+        deleteButton.setEnabled(false);
         
         buttonPanel.add(searchButton);
         buttonPanel.add(refreshButton);
-        buttonPanel.add(editButton);
+        buttonPanel.add(addDetailButton);
+        buttonPanel.add(editContractButton);
         buttonPanel.add(deleteButton);
         
         headerPanel.add(titleLabel, BorderLayout.WEST);
@@ -1883,7 +1962,7 @@ public class ChuThaiUI extends JFrame {
         // Filter panel
         JPanel filterPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JLabel statusLabel = new JLabel("Trạng thái:");
-        String[] statuses = {"Tất cả", "Hoạt động", "Tạm dừng", "Kết thúc"};
+        String[] statuses = {"Tất cả", "Hoạt động", "Tạm dừng", "Kết thúc", "Chờ duyệt"};
         JComboBox<String> statusBox = new JComboBox<>(statuses);
         filterPanel.add(statusLabel);
         filterPanel.add(statusBox);
@@ -1901,9 +1980,9 @@ public class ChuThaiUI extends JFrame {
         String[] contractColumns = {
             "Mã hợp đồng",
             "Loại hợp đồng",
+            "Địa chỉ thu gom",
             "Ngày bắt đầu",
             "Ngày kết thúc",
-            "Địa chỉ thu gom",
             "Mô tả",
             "Trạng thái"
         };
@@ -1916,30 +1995,21 @@ public class ChuThaiUI extends JFrame {
         JTable contractTable = new JTable(contractModel);
         JScrollPane contractScrollPane = new JScrollPane(contractTable);
 
-        // Contract details table
+        // Contract details panel
         JPanel detailPanel = new JPanel(new BorderLayout(10, 10));
-        JPanel detailHeaderPanel = new JPanel(new BorderLayout());
+        JPanel detailHeaderPanel = new JPanel(new BorderLayout(5, 5));
         JLabel detailTitle = new JLabel("Chi Tiết Hợp Đồng");
         detailTitle.setFont(new Font("Arial", Font.BOLD, 16));
         detailTitle.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        // Add buttons panel for detail actions
+        // Detail button panel
         JPanel detailButtonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton editDetailButton = new JButton("Sửa chi tiết");
-        JButton deleteDetailButton = new JButton("Xóa chi tiết");
-
-        editDetailButton.setBackground(new Color(46, 204, 113));
+        editDetailButton.setBackground(new Color(241, 196, 15));
         editDetailButton.setForeground(Color.WHITE);
         editDetailButton.setFocusPainted(false);
         editDetailButton.setEnabled(false);
-
-        deleteDetailButton.setBackground(new Color(231, 76, 60));
-        deleteDetailButton.setForeground(Color.WHITE);
-        deleteDetailButton.setFocusPainted(false);
-        deleteDetailButton.setEnabled(false);
-
         detailButtonPanel.add(editDetailButton);
-        detailButtonPanel.add(deleteDetailButton);
 
         detailHeaderPanel.add(detailTitle, BorderLayout.WEST);
         detailHeaderPanel.add(detailButtonPanel, BorderLayout.EAST);
@@ -1980,86 +2050,109 @@ public class ChuThaiUI extends JFrame {
                     String trangThai = contractTable.getValueAt(row, 6).toString();
                     loadContractDetails(maHopDong, detailModel);
                     
-                    // Enable/disable edit and delete buttons based on status
+                    // Chỉ enable các nút nếu hợp đồng đang ở trạng thái "Chờ duyệt"
                     boolean isChoDuyet = "Chờ duyệt".equals(trangThai);
-                    editButton.setEnabled(isChoDuyet);
+                    addDetailButton.setEnabled(isChoDuyet);
+                    editContractButton.setEnabled(isChoDuyet);
                     deleteButton.setEnabled(isChoDuyet);
                     
-                    // Disable detail buttons when no detail row is selected
+                    // Disable nút sửa chi tiết khi không có dòng nào được chọn
                     editDetailButton.setEnabled(false);
-                    deleteDetailButton.setEnabled(false);
                 } else {
-                    editButton.setEnabled(false);
-                    deleteButton.setEnabled(false);
+                    addDetailButton.setEnabled(false);
+                    editContractButton.setEnabled(false);
                     editDetailButton.setEnabled(false);
-                    deleteDetailButton.setEnabled(false);
+                    deleteButton.setEnabled(false);
                 }
             }
         });
 
-        // Add selection listener to detail table
+        // Add selection listener for detail table
         detailTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
                 int contractRow = contractTable.getSelectedRow();
                 int detailRow = detailTable.getSelectedRow();
+                
                 if (contractRow >= 0 && detailRow >= 0) {
                     String trangThai = contractTable.getValueAt(contractRow, 6).toString();
-                    boolean isChoDuyet = "Chờ duyệt".equals(trangThai);
-                    editDetailButton.setEnabled(isChoDuyet);
-                    deleteDetailButton.setEnabled(isChoDuyet);
+                    editDetailButton.setEnabled("Chờ duyệt".equals(trangThai));
                 } else {
                     editDetailButton.setEnabled(false);
-                    deleteDetailButton.setEnabled(false);
                 }
-            }
-        });
-
-        // Add action listeners for detail buttons
-        editDetailButton.addActionListener(e -> {
-            int contractRow = contractTable.getSelectedRow();
-            int detailRow = detailTable.getSelectedRow();
-            if (contractRow >= 0 && detailRow >= 0) {
-                String maHopDong = contractTable.getValueAt(contractRow, 0).toString();
-                String tenDichVu = detailTable.getValueAt(detailRow, 0).toString();
-                showEditDetailDialog(maHopDong, tenDichVu, detailModel);
-            }
-        });
-
-        deleteDetailButton.addActionListener(e -> {
-            int contractRow = contractTable.getSelectedRow();
-            int detailRow = detailTable.getSelectedRow();
-            if (contractRow >= 0 && detailRow >= 0) {
-                String maHopDong = contractTable.getValueAt(contractRow, 0).toString();
-                String tenDichVu = detailTable.getValueAt(detailRow, 0).toString();
-                deleteContractDetail(maHopDong, tenDichVu, detailModel);
             }
         });
 
         // Add action listeners
         searchButton.addActionListener(e -> showSearchContractDialog(contractModel));
-        refreshButton.addActionListener(e -> loadContractData(contractModel, "Tất cả"));
+        refreshButton.addActionListener(e -> loadContractData(contractModel, statusBox.getSelectedItem().toString()));
         statusBox.addActionListener(e -> loadContractData(contractModel, statusBox.getSelectedItem().toString()));
-
-        // Add edit button action listener
-        editButton.addActionListener(e -> {
+        
+        // Add action listener for add detail button
+        addDetailButton.addActionListener(e -> {
             int selectedRow = contractTable.getSelectedRow();
-            if (selectedRow != -1) {
+            if (selectedRow >= 0) {
                 String maHopDong = contractTable.getValueAt(selectedRow, 0).toString();
                 String trangThai = contractTable.getValueAt(selectedRow, 6).toString();
+                
+                if ("Chờ duyệt".equals(trangThai)) {
+                    showAddContractDetailDialog(maHopDong, detailModel);
+                }
+            }
+        });
+
+        // Add action listener for edit contract button
+        editContractButton.addActionListener(e -> {
+            int selectedRow = contractTable.getSelectedRow();
+            if (selectedRow >= 0) {
+                String maHopDong = contractTable.getValueAt(selectedRow, 0).toString();
+                String trangThai = contractTable.getValueAt(selectedRow, 6).toString();
+                
                 if ("Chờ duyệt".equals(trangThai)) {
                     showEditContractDialog(maHopDong, contractModel);
                 }
             }
         });
 
-        // Add delete button action listener
+        // Add action listener for edit detail button
+        editDetailButton.addActionListener(e -> {
+            int contractRow = contractTable.getSelectedRow();
+            int detailRow = detailTable.getSelectedRow();
+            
+            if (contractRow >= 0 && detailRow >= 0) {
+                String maHopDong = contractTable.getValueAt(contractRow, 0).toString();
+                String trangThai = contractTable.getValueAt(contractRow, 6).toString();
+                
+                if ("Chờ duyệt".equals(trangThai)) {
+                    // Lấy thông tin chi tiết hợp đồng được chọn
+                    String dichVu = detailTable.getValueAt(detailRow, 0).toString();
+                    String khoiLuongStr = detailTable.getValueAt(detailRow, 2).toString().replace(",", "");
+                    double khoiLuong = Double.parseDouble(khoiLuongStr);
+                    String ghiChu = detailTable.getValueAt(detailRow, 5).toString();
+                    
+                    showEditDetailDialog(maHopDong, dichVu, khoiLuong, ghiChu, detailModel);
+                }
+            }
+        });
+
+        // Add action listener for delete button
         deleteButton.addActionListener(e -> {
             int selectedRow = contractTable.getSelectedRow();
-            if (selectedRow != -1) {
+            if (selectedRow >= 0) {
                 String maHopDong = contractTable.getValueAt(selectedRow, 0).toString();
                 String trangThai = contractTable.getValueAt(selectedRow, 6).toString();
+                
                 if ("Chờ duyệt".equals(trangThai)) {
-                    deleteContract(maHopDong, contractModel, statusBox.getSelectedItem().toString());
+                    int confirm = JOptionPane.showConfirmDialog(
+                        this,
+                        "Bạn có chắc chắn muốn xóa hợp đồng này và tất cả chi tiết của nó không?",
+                        "Xác nhận xóa",
+                        JOptionPane.YES_NO_OPTION,
+                        JOptionPane.WARNING_MESSAGE
+                    );
+                    
+                    if (confirm == JOptionPane.YES_OPTION) {
+                        deleteContract(maHopDong, contractModel, detailModel);
+                    }
                 }
             }
         });
@@ -2070,49 +2163,581 @@ public class ChuThaiUI extends JFrame {
         return panel;
     }
 
-    private void loadContractDetails(String maHopDong, DefaultTableModel model) {
-        model.setRowCount(0); // Xóa dữ liệu cũ
-
+    // Thêm phương thức xóa hợp đồng
+    private void deleteContract(String maHopDong, DefaultTableModel contractModel, DefaultTableModel detailModel) {
         try {
             Connection conn = ConnectionJDBC.getConnection();
-            String sql = "SELECT d.TenDichVu, d.DonViTinh, " +
-                        "ct.KhoiLuong, d.DonGia, ct.ThanhTien, ct.GhiChu " +
-                        "FROM ChiTietHopDong ct " +
-                        "JOIN DichVu d ON ct.MaDichVu = d.MaDichVu " +
-                        "WHERE ct.MaHopDong = ?";
-
-            PreparedStatement pstmt = conn.prepareStatement(sql);
-            pstmt.setString(1, maHopDong);
-
-            ResultSet rs = pstmt.executeQuery();
-
-            while (rs.next()) {
-                model.addRow(new Object[]{
-                    rs.getString("TenDichVu"),
-                    rs.getString("DonViTinh"),
-                    rs.getDouble("KhoiLuong"),
-                    String.format("%,d", rs.getLong("DonGia")),
-                    String.format("%,d", rs.getLong("ThanhTien")),
-                    rs.getString("GhiChu")
-                });
+            conn.setAutoCommit(false);
+            
+            try {
+                // Xóa chi tiết hợp đồng trước
+                String deleteDetailsSql = "DELETE FROM ChiTietHopDong WHERE MaHopDong = ?";
+                PreparedStatement deleteDetailsStmt = conn.prepareStatement(deleteDetailsSql);
+                deleteDetailsStmt.setString(1, maHopDong);
+                deleteDetailsStmt.executeUpdate();
+                
+                // Sau đó xóa hợp đồng
+                String deleteContractSql = "DELETE FROM HopDong WHERE MaHopDong = ? AND TrangThai = 'Chờ duyệt'";
+                PreparedStatement deleteContractStmt = conn.prepareStatement(deleteContractSql);
+                deleteContractStmt.setString(1, maHopDong);
+                
+                int result = deleteContractStmt.executeUpdate();
+                
+                if (result > 0) {
+                    conn.commit();
+                    JOptionPane.showMessageDialog(this,
+                        "Xóa hợp đồng thành công!",
+                        "Thông báo",
+                        JOptionPane.INFORMATION_MESSAGE);
+                    
+                    // Refresh both tables
+                    loadContractData(contractModel, "Tất cả");
+                    detailModel.setRowCount(0); // Clear detail table
+                } else {
+                    throw new SQLException("Không thể xóa hợp đồng");
+                }
+            } catch (SQLException ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(true);
+                conn.close();
             }
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi xóa hợp đồng: " + ex.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+        }
+    }
 
+    // Thêm phương thức để hiển thị dialog thêm chi tiết hợp đồng
+    private void showAddContractDetailDialog(String maHopDong, DefaultTableModel detailModel) {
+        JDialog dialog = new JDialog(this, "Thêm chi tiết hợp đồng", true);
+        dialog.setLayout(new BorderLayout(10, 10));
+        dialog.setSize(500, 300);
+        dialog.setLocationRelativeTo(this);
+
+        // Main panel
+        JPanel mainPanel = new JPanel(new GridBagLayout());
+        mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.insets = new Insets(5, 5, 5, 5);
+
+        // Chọn dịch vụ
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Chọn dịch vụ:"), gbc);
+
+        JComboBox<String> serviceBox = new JComboBox<>();
+        loadServices(serviceBox);
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(serviceBox, gbc);
+
+        // Khối lượng
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Khối lượng (kg):"), gbc);
+
+        JTextField weightField = new JTextField();
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(weightField, gbc);
+
+        // Thành tiền
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Thành tiền:"), gbc);
+
+        JLabel totalLabel = new JLabel("0 đ");
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(totalLabel, gbc);
+
+        // Ghi chú
+        gbc.gridx = 0;
+        gbc.gridy = 3;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Ghi chú:"), gbc);
+
+        JTextField noteField = new JTextField();
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(noteField, gbc);
+
+        // Add listeners for total calculation
+        serviceBox.addActionListener(e -> calculateTotal(serviceBox, weightField, totalLabel));
+        weightField.addKeyListener(new java.awt.event.KeyAdapter() {
+            public void keyTyped(java.awt.event.KeyEvent e) {
+                char c = e.getKeyChar();
+                String currentText = weightField.getText();
+                if (!((c >= '0' && c <= '9') || c == ',' || c == KeyEvent.VK_BACK_SPACE || c == KeyEvent.VK_DELETE)) {
+                    e.consume();
+                    return;
+                }
+                if (c == ',' && currentText.contains(",")) {
+                    e.consume();
+                    return;
+                }
+            }
+            
+            @Override
+            public void keyReleased(java.awt.event.KeyEvent e) {
+                calculateTotal(serviceBox, weightField, totalLabel);
+            }
+        });
+
+        // Button panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton saveButton = new JButton("Lưu");
+        JButton cancelButton = new JButton("Hủy");
+
+        saveButton.setBackground(new Color(46, 204, 113));
+        saveButton.setForeground(Color.WHITE);
+        saveButton.setFocusPainted(false);
+
+        cancelButton.setBackground(new Color(231, 76, 60));
+        cancelButton.setForeground(Color.WHITE);
+        cancelButton.setFocusPainted(false);
+
+        saveButton.addActionListener(e -> {
+            try {
+                // Validate input
+                if (serviceBox.getSelectedItem() == null || 
+                    serviceBox.getSelectedItem().toString().equals("-- Chọn dịch vụ --")) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Vui lòng chọn dịch vụ!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                String weightText = weightField.getText().trim().replace(',', '.');
+                if (weightText.isEmpty()) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Vui lòng nhập khối lượng!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                double weight = Double.parseDouble(weightText);
+                if (weight <= 0) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Khối lượng phải lớn hơn 0!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                addContractDetail(
+                    maHopDong,
+                    null, // district is no longer needed
+                    null, // route is no longer needed
+                    serviceBox.getSelectedItem().toString(),
+                    weightField.getText(),
+                    totalLabel.getText(),
+                    noteField.getText(),
+                    detailModel
+                );
+                dialog.dispose();
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(dialog,
+                    "Khối lượng không hợp lệ!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        cancelButton.addActionListener(e -> dialog.dispose());
+
+        buttonPanel.add(saveButton);
+        buttonPanel.add(cancelButton);
+
+        dialog.add(mainPanel, BorderLayout.CENTER);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+        dialog.setVisible(true);
+    }
+
+    private void loadDistricts(JComboBox<String> districtBox) {
+        try {
+            Connection conn = ConnectionJDBC.getConnection();
+            String sql = "SELECT TenQuan FROM Quan ORDER BY TenQuan";
+            PreparedStatement pstmt = conn.prepareStatement(sql);
+            ResultSet rs = pstmt.executeQuery();
+            
+            while (rs.next()) {
+                districtBox.addItem(rs.getString("TenQuan"));
+            }
+            
             rs.close();
             pstmt.close();
             conn.close();
         } catch (SQLException ex) {
             ex.printStackTrace();
             JOptionPane.showMessageDialog(this,
-                "Lỗi khi tải chi tiết hợp đồng: " + ex.getMessage(),
+                "Lỗi khi tải danh sách quận: " + ex.getMessage(),
                 "Lỗi",
                 JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void loadRoutes(JComboBox<String> routeBox, String district) {
+        try {
+            Connection conn = ConnectionJDBC.getConnection();
+            String sql = "SELECT t.TenTuyen FROM TuyenDuongThuGom t " +
+                        "JOIN Quan q ON t.KhuVuc = q.MaQuan " +
+                        "WHERE q.TenQuan = ? " +
+                        "ORDER BY t.TenTuyen";
+            PreparedStatement pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, district);
+            ResultSet rs = pstmt.executeQuery();
+            
+            while (rs.next()) {
+                routeBox.addItem(rs.getString("TenTuyen"));
+            }
+            
+            rs.close();
+            pstmt.close();
+            conn.close();
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi tải danh sách tuyến đường: " + ex.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void loadServices(JComboBox<String> serviceBox) {
+        serviceBox.removeAllItems();
+        
+        try (Connection conn = ConnectionJDBC.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(
+                 "SELECT TenDichVu, DonViTinh, DonGia FROM DichVu ORDER BY TenDichVu")) {
+            
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String service = String.format("%s - %s - %,d VNĐ/%s",
+                    rs.getString("TenDichVu"),
+                    rs.getString("DonViTinh"),
+                    rs.getLong("DonGia"),
+                    rs.getString("DonViTinh"));
+                serviceBox.addItem(service);
+            }
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi tải danh sách dịch vụ: " + ex.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private boolean validateContractDetailInput(JComboBox<String> districtBox, 
+                                              JComboBox<String> routeBox,
+                                              JComboBox<String> serviceBox,
+                                              JTextField weightField) {
+        if (districtBox.getSelectedItem() == null || 
+            districtBox.getSelectedItem().toString().equals("-- Chọn quận --")) {
+            JOptionPane.showMessageDialog(this,
+                "Vui lòng chọn quận!",
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        if (routeBox.getSelectedItem() == null || 
+            routeBox.getSelectedItem().toString().equals("-- Chọn tuyến đường --")) {
+            JOptionPane.showMessageDialog(this,
+                "Vui lòng chọn tuyến đường!",
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        if (serviceBox.getSelectedItem() == null) {
+            JOptionPane.showMessageDialog(this,
+                "Vui lòng chọn dịch vụ!",
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        try {
+            String weightText = weightField.getText().trim().replace(',', '.');
+            if (weightText.isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                    "Vui lòng nhập khối lượng!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+                return false;
+            }
+            
+            double weight = Double.parseDouble(weightText);
+            if (weight <= 0) {
+                JOptionPane.showMessageDialog(this,
+                    "Khối lượng phải lớn hơn 0!",
+                    "Lỗi",
+                    JOptionPane.ERROR_MESSAGE);
+                return false;
+            }
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this,
+                "Khối lượng không hợp lệ!",
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void addContractDetail(String maHopDong, 
+                                 String district,
+                                 String route,
+                                 String service,
+                                 String weight,
+                                 String total,
+                                 String note,
+                                 DefaultTableModel detailModel) {
+        try {
+            Connection conn = ConnectionJDBC.getConnection();
+            conn.setAutoCommit(false);
+
+            try {
+                String serviceName = service.split(" - ")[0];
+                
+                // Get MaDichVu
+                String findServiceSql = "SELECT MaDichVu FROM DichVu WHERE TenDichVu = ?";
+                PreparedStatement findServiceStmt = conn.prepareStatement(findServiceSql);
+                findServiceStmt.setString(1, serviceName);
+                ResultSet rs = findServiceStmt.executeQuery();
+                
+                if (rs.next()) {
+                    int maDichVu = rs.getInt("MaDichVu");
+                    
+                    // Insert chi tiết hợp đồng
+                    String insertSql = "INSERT INTO ChiTietHopDong (MaHopDong, MaDichVu, KhoiLuong, ThanhTien, GhiChu) " +
+                                     "VALUES (?, ?, ?, ?, ?)";
+                    PreparedStatement pstmt = conn.prepareStatement(insertSql);
+                    
+            pstmt.setString(1, maHopDong);
+                    pstmt.setInt(2, maDichVu);
+                    pstmt.setDouble(3, Double.parseDouble(weight.replace(",", ".")));
+                    pstmt.setDouble(4, Double.parseDouble(total.replaceAll("[^0-9]", "")));
+                    pstmt.setString(5, note);
+                    
+                    int result = pstmt.executeUpdate();
+                    
+                    if (result > 0) {
+                        conn.commit();
+                        JOptionPane.showMessageDialog(this,
+                            "Thêm chi tiết hợp đồng thành công!",
+                            "Thông báo",
+                            JOptionPane.INFORMATION_MESSAGE);
+                        
+                        // Refresh detail table
+                        loadContractDetails(maHopDong, detailModel);
+                    } else {
+                        throw new SQLException("Không thể thêm chi tiết hợp đồng");
+                    }
+                } else {
+                    throw new SQLException("Không tìm thấy dịch vụ: " + serviceName);
+                }
+            } catch (SQLException ex) {
+                conn.rollback();
+                throw ex;
+            } finally {
+                conn.setAutoCommit(true);
+                conn.close();
+            }
+        } catch (SQLException | NumberFormatException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi thêm chi tiết hợp đồng: " + ex.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void loadContractDetails(String maHopDong, DefaultTableModel model) {
+        model.setRowCount(0);
+        try {
+            Connection conn = ConnectionJDBC.getConnection();
+            String sql = "SELECT dv.TenDichVu, dv.DonViTinh, ct.KhoiLuong, dv.DonGia, ct.ThanhTien, ct.GhiChu " +
+                        "FROM ChiTietHopDong ct " +
+                        "JOIN DichVu dv ON ct.MaDichVu = dv.MaDichVu " +
+                        "WHERE ct.MaHopDong = ?";
+            PreparedStatement pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, maHopDong);
+            ResultSet rs = pstmt.executeQuery();
+
+            while (rs.next()) {
+                model.addRow(new Object[]{
+                    rs.getString("TenDichVu"),
+                    rs.getString("DonViTinh"),
+                    String.format("%,d", rs.getInt("KhoiLuong")),
+                    String.format("%,.0f đ", rs.getDouble("DonGia")),
+                    String.format("%,.0f đ", rs.getDouble("ThanhTien")),
+                    rs.getString("GhiChu")
+                });
+            }
+
+            conn.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                "Lỗi khi tải chi tiết hợp đồng: " + e.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void deleteContractDetail(String maHopDong, String maDichVu, DefaultTableModel detailModel) {
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "Bạn có chắc chắn muốn xóa chi tiết hợp đồng này không?",
+            "Xác nhận xóa",
+            JOptionPane.YES_NO_OPTION);
+            
+        if (confirm == JOptionPane.YES_OPTION) {
+            try {
+                Connection conn = ConnectionJDBC.getConnection();
+                conn.setAutoCommit(false);
+                
+                try {
+                    String sql = "DELETE FROM ChiTietHopDong WHERE MaHopDong = ? AND MaDichVu = ?";
+                    PreparedStatement pstmt = conn.prepareStatement(sql);
+                    pstmt.setString(1, maHopDong);
+                    pstmt.setString(2, maDichVu);
+                    
+                    int result = pstmt.executeUpdate();
+                    
+                    if (result > 0) {
+                        conn.commit();
+                        JOptionPane.showMessageDialog(this,
+                            "Xóa chi tiết hợp đồng thành công!",
+                            "Thông báo",
+                            JOptionPane.INFORMATION_MESSAGE);
+                            
+                        // Refresh detail table
+                        loadContractDetails(maHopDong, detailModel);
+                    } else {
+                        throw new SQLException("Không thể xóa chi tiết hợp đồng");
+                    }
+                } catch (SQLException ex) {
+                    conn.rollback();
+                    throw ex;
+                } finally {
+                    conn.setAutoCommit(true);
+                    conn.close();
+                }
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                    "Lỗi khi xóa chi tiết hợp đồng: " + ex.getMessage(),
+                "Lỗi",
+                JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private void createContractDetailTable(String maHopDong, JTable detailTable) {
+        DefaultTableModel detailModel = new DefaultTableModel() {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 4; // Chỉ cho phép edit cột nút xóa
+            }
+        };
+        
+        detailModel.addColumn("Tên dịch vụ");
+        detailModel.addColumn("Đơn vị tính");
+        detailModel.addColumn("Khối lượng");
+        detailModel.addColumn("Đơn giá");
+        detailModel.addColumn("Thành tiền");
+        detailModel.addColumn("Ghi chú");
+        
+        detailTable.setModel(detailModel);
+        
+
+        
+        // Set column widths
+        detailTable.getColumnModel().getColumn(0).setPreferredWidth(150); // Tên dịch vụ
+        detailTable.getColumnModel().getColumn(1).setPreferredWidth(100); // Đơn vị tính
+        detailTable.getColumnModel().getColumn(2).setPreferredWidth(100); // Khối lượng
+        detailTable.getColumnModel().getColumn(3).setPreferredWidth(100); // Đơn giá
+        detailTable.getColumnModel().getColumn(4).setPreferredWidth(100); // Thành tiền
+        detailTable.getColumnModel().getColumn(5).setPreferredWidth(200); // Ghi chú
+        
+        // Load data
+        loadContractDetails(maHopDong, detailModel);
+    }
+
+    private class ButtonRenderer extends JButton implements TableCellRenderer {
+        public ButtonRenderer(String text) {
+            setText(text);
+            setOpaque(true);
+            setBackground(new Color(231, 76, 60));
+            setForeground(Color.WHITE);
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value,
+                boolean isSelected, boolean hasFocus, int row, int column) {
+            return this;
+        }
+    }
+
+    private class ButtonEditor extends DefaultCellEditor {
+        protected JButton button;
+        private String label;
+        private boolean isPushed;
+        private ActionListener actionListener;
+        private int currentRow;
+
+        public ButtonEditor(JCheckBox checkBox, String label, Consumer<Integer> action) {
+            super(checkBox);
+            this.label = label;
+            button = new JButton(label);
+            button.setOpaque(true);
+            button.setBackground(new Color(231, 76, 60));
+            button.setForeground(Color.WHITE);
+            
+            button.addActionListener(e -> {
+                fireEditingStopped();
+                action.accept(currentRow);
+            });
+        }
+
+        @Override
+        public Component getTableCellEditorComponent(JTable table, Object value,
+                boolean isSelected, int row, int column) {
+            currentRow = row;
+            return button;
+        }
+
+        @Override
+        public Object getCellEditorValue() {
+            return label;
+        }
+
+        @Override
+        public boolean stopCellEditing() {
+            isPushed = false;
+            return super.stopCellEditing();
         }
     }
 
     private void showSearchContractDialog(DefaultTableModel model) {
         JDialog dialog = new JDialog(this, "Tìm kiếm hợp đồng", true);
         dialog.setLayout(new BorderLayout(10, 10));
-        dialog.setSize(400, 250); // Increased height to accommodate new field
+        dialog.setSize(400, 200);
         dialog.setLocationRelativeTo(this);
 
         // Main panel with GridBagLayout for better control
@@ -2133,28 +2758,16 @@ public class ChuThaiUI extends JFrame {
         gbc.weightx = 1.0;
         mainPanel.add(maHdField, gbc);
 
-        // Địa chỉ thu gom
-        gbc.gridx = 0;
-        gbc.gridy = 1;
-        gbc.weightx = 0;
-        mainPanel.add(new JLabel("Địa chỉ thu gom:"), gbc);
-
-        JTextField diaChiField = new JTextField(15);
-        gbc.gridx = 1;
-        gbc.gridy = 1;
-        gbc.weightx = 1.0;
-        mainPanel.add(diaChiField, gbc);
-
         // Ngày bắt đầu
         gbc.gridx = 0;
-        gbc.gridy = 2;
+        gbc.gridy = 1;
         gbc.weightx = 0;
         mainPanel.add(new JLabel("Ngày bắt đầu:"), gbc);
 
         JSpinner dateSpinner = createSearchDateSpinner();
         JPanel datePanel = (JPanel)dateSpinner.getClientProperty("parent.panel");
         gbc.gridx = 1;
-        gbc.gridy = 2;
+        gbc.gridy = 1;
         gbc.weightx = 1.0;
         mainPanel.add(datePanel, gbc);
 
@@ -2162,64 +2775,90 @@ public class ChuThaiUI extends JFrame {
         JCheckBox dateCheckBox = new JCheckBox("Tìm theo ngày", false);
         dateCheckBox.addActionListener(e -> {
             dateSpinner.setEnabled(dateCheckBox.isSelected());
+            datePanel.getComponent(1).setEnabled(dateCheckBox.isSelected());
         });
-        dateSpinner.setEnabled(false);
         gbc.gridx = 0;
-        gbc.gridy = 3;
+        gbc.gridy = 2;
         gbc.gridwidth = 2;
         mainPanel.add(dateCheckBox, gbc);
 
-        // Button panel
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
-        JButton searchButton = new JButton("Tìm kiếm");
-        JButton cancelButton = new JButton("Hủy");
+        // Initially disable date spinner
+        dateSpinner.setEnabled(false);
+        datePanel.getComponent(1).setEnabled(false);
 
-        searchButton.addActionListener(e -> {
+        // Button panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton searchBtn = new JButton("Tìm kiếm");
+        JButton cancelBtn = new JButton("Hủy");
+
+        // Style buttons
+        searchBtn.setBackground(new Color(46, 64, 83));
+        searchBtn.setForeground(Color.WHITE);
+        searchBtn.setFocusPainted(false);
+
+        cancelBtn.setBackground(new Color(46, 64, 83));
+        cancelBtn.setForeground(Color.WHITE);
+        cancelBtn.setFocusPainted(false);
+
+        searchBtn.addActionListener(evt -> {
             try {
-                Connection conn = ConnectionJDBC.getConnection();
+                String maHd = maHdField.getText().trim();
+                Date ngayBd = dateCheckBox.isSelected() ? 
+                    (Date) ((SpinnerDateModel)dateSpinner.getModel()).getValue() : null;
+
+                // Validate input - either ID or date must be provided
+                if (maHd.isEmpty() && !dateCheckBox.isSelected()) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Vui lòng nhập mã hợp đồng hoặc chọn ngày để tìm kiếm.",
+                        "Thông báo",
+                        JOptionPane.WARNING_MESSAGE);
+                    return;
+                }
+
                 StringBuilder sql = new StringBuilder(
-                    "SELECT h.MaHopDong, h.LoaiHopDong, h.NgBatDau, h.NgKetThuc, " +
-                    "h.DiaChiThuGom, DBMS_LOB.SUBSTR(h.MoTa, 4000, 1) as MoTa, h.TrangThai " +
+                    "SELECT h.MaHopDong, h.LoaiHopDong, h.DiaChiThuGom, h.NgBatDau, h.NgKetThuc, " +
+                    "DBMS_LOB.SUBSTR(h.MoTa, 4000, 1) as MoTa, h.TrangThai " +
                     "FROM HopDong h " +
-                    "WHERE h.MaChuThai = ? "
-                );
+                    "WHERE h.MaChuThai = ? ");
 
                 List<Object> params = new ArrayList<>();
+                List<Integer> types = new ArrayList<>();
                 params.add(maKhachHang);
+                types.add(Types.VARCHAR);
 
-                if (!maHdField.getText().trim().isEmpty()) {
-                    sql.append(" AND h.MaHopDong = ? ");
-                    params.add(maHdField.getText().trim());
+                // Only add ID condition if ID is provided
+                if (!maHd.isEmpty()) {
+                    sql.append("AND h.MaHopDong = ? ");
+                    params.add(maHd);
+                    types.add(Types.VARCHAR);
+                }
+                // Add date condition if date is selected
+                if (ngayBd != null) {
+                    sql.append("AND TRUNC(h.NgBatDau) = TRUNC(?) ");
+                    params.add(new Timestamp(ngayBd.getTime()));
+                    types.add(Types.TIMESTAMP);
                 }
 
-                if (!diaChiField.getText().trim().isEmpty()) {
-                    sql.append(" AND LOWER(h.DiaChiThuGom) LIKE LOWER(?) ");
-                    params.add("%" + diaChiField.getText().trim() + "%");
-                }
+                sql.append("ORDER BY h.NgBatDau DESC");
 
-                if (dateCheckBox.isSelected()) {
-                    sql.append(" AND TRUNC(h.NgBatDau) = TRUNC(?) ");
-                    params.add(new java.sql.Date(((Date) dateSpinner.getValue()).getTime()));
-                }
-
-                sql.append(" ORDER BY h.NgBatDau DESC");
-
+                model.setRowCount(0);
+                Connection conn = ConnectionJDBC.getConnection();
                 PreparedStatement pstmt = conn.prepareStatement(sql.toString());
+                
                 for (int i = 0; i < params.size(); i++) {
-                    pstmt.setObject(i + 1, params.get(i));
+                    pstmt.setObject(i + 1, params.get(i), types.get(i));
                 }
 
                 ResultSet rs = pstmt.executeQuery();
-                model.setRowCount(0);
                 SimpleDateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy");
 
                 while (rs.next()) {
                     model.addRow(new Object[]{
                         rs.getString("MaHopDong"),
                         rs.getString("LoaiHopDong"),
+                        rs.getString("DiaChiThuGom"),
                         dateFormat.format(rs.getDate("NgBatDau")),
                         dateFormat.format(rs.getDate("NgKetThuc")),
-                        rs.getString("DiaChiThuGom"),
                         rs.getString("MoTa"),
                         rs.getString("TrangThai")
                     });
@@ -2228,7 +2867,15 @@ public class ChuThaiUI extends JFrame {
                 rs.close();
                 pstmt.close();
                 conn.close();
+
+                if (model.getRowCount() == 0) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Không tìm thấy kết quả nào.",
+                        "Thông báo",
+                        JOptionPane.INFORMATION_MESSAGE);
+                } else {
                 dialog.dispose();
+                }
 
             } catch (SQLException ex) {
                 ex.printStackTrace();
@@ -2239,10 +2886,10 @@ public class ChuThaiUI extends JFrame {
             }
         });
 
-        cancelButton.addActionListener(e -> dialog.dispose());
+        cancelBtn.addActionListener(evt -> dialog.dispose());
 
-        buttonPanel.add(searchButton);
-        buttonPanel.add(cancelButton);
+        buttonPanel.add(searchBtn);
+        buttonPanel.add(cancelBtn);
 
         dialog.add(mainPanel, BorderLayout.CENTER);
         dialog.add(buttonPanel, BorderLayout.SOUTH);
@@ -2255,8 +2902,8 @@ public class ChuThaiUI extends JFrame {
         try {
             Connection conn = ConnectionJDBC.getConnection();
             StringBuilder sql = new StringBuilder(
-                "SELECT h.MaHopDong, h.LoaiHopDong, h.NgBatDau, h.NgKetThuc, " +
-                "h.DiaChiThuGom, DBMS_LOB.SUBSTR(h.MoTa, 4000, 1) as MoTa, h.TrangThai " +
+                "SELECT h.MaHopDong, h.LoaiHopDong, h.DiaChiThuGom, h.NgBatDau, h.NgKetThuc, " +
+                "DBMS_LOB.SUBSTR(h.MoTa, 4000, 1) as MoTa, h.TrangThai " +
                 "FROM HopDong h " +
                 "WHERE h.MaChuThai = ? "
             );
@@ -2279,9 +2926,9 @@ public class ChuThaiUI extends JFrame {
                 model.addRow(new Object[]{
                     rs.getString("MaHopDong"),
                     rs.getString("LoaiHopDong"),
+                    rs.getString("DiaChiThuGom"),
                     dateFormat.format(rs.getDate("NgBatDau")),
                     dateFormat.format(rs.getDate("NgKetThuc")),
-                    rs.getString("DiaChiThuGom"),
                     rs.getString("MoTa"),
                     rs.getString("TrangThai")
                 });
@@ -2401,81 +3048,7 @@ public class ChuThaiUI extends JFrame {
         return spinner;
     }
 
-    // Inner class for button renderer
-    private class ButtonRenderer extends JButton implements TableCellRenderer {
-        public ButtonRenderer() {
-            setOpaque(true);
-            setBackground(new Color(46, 204, 113));
-            setForeground(Color.WHITE);
-        }
-
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                boolean isSelected, boolean hasFocus, int row, int column) {
-            String tinhTrang = (String) table.getValueAt(row, 5);
-            if ("Chưa thanh toán".equals(tinhTrang)) {
-                setText("Thanh toán");
-                setEnabled(true);
-            } else {
-                setText("Đã thanh toán");
-                setEnabled(false);
-            }
-            return this;
-        }
-    }
-
-    // Inner class for button editor
-    private class ButtonEditor extends DefaultCellEditor {
-        protected JButton button;
-        private String maHoaDon;
-        private String soTien;
-        private boolean isPushed;
-
-        public ButtonEditor(JCheckBox checkBox) {
-            super(checkBox);
-            button = new JButton();
-            button.setOpaque(true);
-            button.setBackground(new Color(46, 204, 113));
-            button.setForeground(Color.WHITE);
-            
-            button.addActionListener(e -> {
-                fireEditingStopped();
-            });
-        }
-
-        @Override
-        public Component getTableCellEditorComponent(JTable table, Object value,
-                boolean isSelected, int row, int column) {
-            String tinhTrang = (String) table.getValueAt(row, 5);
-            if ("Chưa thanh toán".equals(tinhTrang)) {
-                button.setText("Thanh toán");
-                button.setEnabled(true);
-            } else {
-                button.setText("Đã thanh toán");
-                button.setEnabled(false);
-            }
-            
-            maHoaDon = table.getValueAt(row, 0).toString();
-            soTien = table.getValueAt(row, 3).toString();
-            isPushed = true;
-            return button;
-        }
-
-        @Override
-        public Object getCellEditorValue() {
-            if (isPushed) {
-                showPaymentDialog(maHoaDon, soTien);
-            }
-            isPushed = false;
-            return button.getText();
-        }
-
-        @Override
-        public boolean stopCellEditing() {
-            isPushed = false;
-            return super.stopCellEditing();
-        }
-    }
+    
 
     private JPanel createHoaDonPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
@@ -3240,129 +3813,93 @@ public class ChuThaiUI extends JFrame {
         detailPanel.repaint();
     }
 
-    // Method to delete contract
-    private void deleteContract(String maHopDong, DefaultTableModel model, String currentFilter) {
-        int confirm = JOptionPane.showConfirmDialog(
-            this,
-            "Bạn có chắc chắn muốn xóa hợp đồng này không?",
-            "Xác nhận xóa",
-            JOptionPane.YES_NO_OPTION,
-            JOptionPane.WARNING_MESSAGE
-        );
-        
-        if (confirm == JOptionPane.YES_OPTION) {
-            try {
-                Connection conn = ConnectionJDBC.getConnection();
-                conn.setAutoCommit(false);
-                
-                try {
-                    // Xóa chi tiết hợp đồng trước
-                    String deleteDetailsSql = "DELETE FROM ChiTietHopDong WHERE MaHopDong = ?";
-                    PreparedStatement detailsStmt = conn.prepareStatement(deleteDetailsSql);
-                    detailsStmt.setString(1, maHopDong);
-                    detailsStmt.executeUpdate();
-                    
-                    // Sau đó xóa hợp đồng
-                    String deleteContractSql = "DELETE FROM HopDong WHERE MaHopDong = ? AND TrangThai = 'Chờ duyệt'";
-                    PreparedStatement contractStmt = conn.prepareStatement(deleteContractSql);
-                    contractStmt.setString(1, maHopDong);
-                    
-                    int rowsAffected = contractStmt.executeUpdate();
-                    
-                    if (rowsAffected > 0) {
-                        conn.commit();
-                        JOptionPane.showMessageDialog(this,
-                            "Xóa hợp đồng thành công!",
-                            "Thông báo",
-                            JOptionPane.INFORMATION_MESSAGE);
-                        
-                        // Refresh table data
-                        loadContractData(model, currentFilter);
-                    } else {
-                        conn.rollback();
-                        JOptionPane.showMessageDialog(this,
-                            "Không thể xóa hợp đồng!",
-                            "Lỗi",
-                            JOptionPane.ERROR_MESSAGE);
-                    }
-                    
-                    detailsStmt.close();
-                    contractStmt.close();
-                } catch (SQLException ex) {
-                    conn.rollback();
-                    throw ex;
-                } finally {
-                    conn.setAutoCommit(true);
-                    conn.close();
-                }
-            } catch (SQLException ex) {
-                ex.printStackTrace();
-                JOptionPane.showMessageDialog(this,
-                    "Lỗi khi xóa hợp đồng: " + ex.getMessage(),
-                    "Lỗi",
-                    JOptionPane.ERROR_MESSAGE);
+    // Thêm phương thức tính tổng tiền
+    private void calculateTotal(JComboBox<String> serviceBox, JTextField weightField, JLabel totalLabel) {
+        try {
+            String selectedService = (String) serviceBox.getSelectedItem();
+            if (selectedService == null || weightField.getText().trim().isEmpty()) {
+                totalLabel.setText("0 VNĐ");
+                return;
             }
+
+            String[] parts = selectedService.split(" - ");
+            String priceStr = parts[2].replaceAll("[^0-9]", "");
+            double price = Double.parseDouble(priceStr);
+            String weightStr = weightField.getText().trim().replace(".", "").replace(",", ".");
+            double weight = Double.parseDouble(weightStr);
+            
+            double total = price * weight;
+            totalLabel.setText(String.format("%,d VNĐ", (long)total));
+        } catch (NumberFormatException | ArrayIndexOutOfBoundsException ex) {
+            totalLabel.setText("0 VNĐ");
         }
     }
 
-    // Method to show edit contract dialog
-    private void showEditContractDialog(String maHopDong, DefaultTableModel model) {
-        JDialog dialog = new JDialog(this, "Sửa hợp đồng", true);
-        dialog.setLayout(new BorderLayout(10, 10));
-        dialog.setSize(600, 400);
-        dialog.setLocationRelativeTo(this);
-
-        // Main panel with GridBagLayout
-        JPanel mainPanel = new JPanel(new GridBagLayout());
-        mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.insets = new Insets(5, 5, 5, 5);
-
+    private void showEditContractDialog(String maHopDong, DefaultTableModel contractModel) {
         try {
             Connection conn = ConnectionJDBC.getConnection();
-            String sql = "SELECT * FROM HopDong WHERE MaHopDong = ? AND TrangThai = 'Chờ duyệt'";
+            String sql = "SELECT NgBatDau, NgKetThuc, MoTa, DiaChiThuGom FROM HopDong WHERE MaHopDong = ? AND TrangThai = 'Chờ duyệt'";
             PreparedStatement pstmt = conn.prepareStatement(sql);
             pstmt.setString(1, maHopDong);
             ResultSet rs = pstmt.executeQuery();
 
             if (rs.next()) {
-                // Loại hợp đồng
-                gbc.gridx = 0;
-                gbc.gridy = 0;
-                mainPanel.add(new JLabel("Loại hợp đồng:"), gbc);
+                JDialog dialog = new JDialog(this, "Sửa hợp đồng", true);
+                dialog.setLayout(new BorderLayout(10, 10));
+                dialog.setSize(400, 300);
+                dialog.setLocationRelativeTo(this);
 
-                String[] loaiHD = {"Định kỳ", "Không định kỳ"};
-                JComboBox<String> loaiHDBox = new JComboBox<>(loaiHD);
-                loaiHDBox.setSelectedItem(rs.getString("LoaiHopDong"));
-                gbc.gridx = 1;
-                mainPanel.add(loaiHDBox, gbc);
+                JPanel mainPanel = new JPanel(new GridBagLayout());
+                mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+                GridBagConstraints gbc = new GridBagConstraints();
+                gbc.fill = GridBagConstraints.HORIZONTAL;
+                gbc.insets = new Insets(5, 5, 5, 5);
 
                 // Địa chỉ thu gom
                 gbc.gridx = 0;
-                gbc.gridy = 1;
+                gbc.gridy = 0;
                 mainPanel.add(new JLabel("Địa chỉ thu gom:"), gbc);
 
-                JTextField diaChiField = new JTextField(rs.getString("DiaChiThuGom"));
+                JTextField addressField = new JTextField(rs.getString("DiaChiThuGom"));
                 gbc.gridx = 1;
-                mainPanel.add(diaChiField, gbc);
+                mainPanel.add(addressField, gbc);
+
+                // Ngày bắt đầu
+                gbc.gridx = 0;
+                gbc.gridy = 1;
+                mainPanel.add(new JLabel("Ngày bắt đầu:"), gbc);
+
+                JSpinner startDateSpinner = createDateSpinner();
+                startDateSpinner.setValue(rs.getDate("NgBatDau"));
+                gbc.gridx = 1;
+                mainPanel.add(startDateSpinner, gbc);
+
+                // Ngày kết thúc
+                gbc.gridx = 0;
+                gbc.gridy = 2;
+                mainPanel.add(new JLabel("Ngày kết thúc:"), gbc);
+
+                JSpinner endDateSpinner = createDateSpinner();
+                endDateSpinner.setValue(rs.getDate("NgKetThuc"));
+                gbc.gridx = 1;
+                mainPanel.add(endDateSpinner, gbc);
 
                 // Mô tả
                 gbc.gridx = 0;
-                gbc.gridy = 2;
+                gbc.gridy = 3;
                 mainPanel.add(new JLabel("Mô tả:"), gbc);
 
-                JTextArea moTaArea = new JTextArea(rs.getString("MoTa"));
-                moTaArea.setRows(4);
-                moTaArea.setLineWrap(true);
-                moTaArea.setWrapStyleWord(true);
-                JScrollPane moTaScroll = new JScrollPane(moTaArea);
+                JTextArea descArea = new JTextArea(rs.getString("MoTa"));
+                descArea.setRows(3);
+                descArea.setLineWrap(true);
+                descArea.setWrapStyleWord(true);
+                JScrollPane descScroll = new JScrollPane(descArea);
                 gbc.gridx = 1;
-                mainPanel.add(moTaScroll, gbc);
+                mainPanel.add(descScroll, gbc);
 
                 // Button panel
                 JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-                JButton saveButton = new JButton("Lưu thay đổi");
+                JButton saveButton = new JButton("Lưu");
                 JButton cancelButton = new JButton("Hủy");
 
                 saveButton.setBackground(new Color(46, 204, 113));
@@ -3375,13 +3912,33 @@ public class ChuThaiUI extends JFrame {
 
                 saveButton.addActionListener(evt -> {
                     try {
-                        String updateSql = "UPDATE HopDong SET LoaiHopDong = ?, DiaChiThuGom = ?, MoTa = ? " +
-                                         "WHERE MaHopDong = ? AND TrangThai = 'Chờ duyệt'";
+                        Date startDate = (Date) startDateSpinner.getValue();
+                        Date endDate = (Date) endDateSpinner.getValue();
+                        String desc = descArea.getText().trim();
+
+                        // Validate dates
+                        if (startDate.after(endDate)) {
+                            JOptionPane.showMessageDialog(dialog,
+                                "Ngày bắt đầu không thể sau ngày kết thúc!",
+                                "Lỗi",
+                                JOptionPane.ERROR_MESSAGE);
+                            return;
+                        }
+
+                        // Calculate duration in days
+                        long durationInDays = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+                        String contractType = durationInDays > 180 ? "Dài hạn" : "Ngắn hạn";
+
+                        // Update contract with new type
+                        String updateSql = "UPDATE HopDong SET NgBatDau = ?, NgKetThuc = ?, MoTa = ?, DiaChiThuGom = ?, LoaiHopDong = ? " +
+                                        "WHERE MaHopDong = ? AND TrangThai = 'Chờ duyệt'";
                         PreparedStatement updateStmt = conn.prepareStatement(updateSql);
-                        updateStmt.setString(1, (String) loaiHDBox.getSelectedItem());
-                        updateStmt.setString(2, diaChiField.getText().trim());
-                        updateStmt.setString(3, moTaArea.getText().trim());
-                        updateStmt.setString(4, maHopDong);
+                        updateStmt.setDate(1, new java.sql.Date(startDate.getTime()));
+                        updateStmt.setDate(2, new java.sql.Date(endDate.getTime()));
+                        updateStmt.setString(3, desc);
+                        updateStmt.setString(4, addressField.getText().trim());
+                        updateStmt.setString(5, contractType);
+                        updateStmt.setString(6, maHopDong);
 
                         int result = updateStmt.executeUpdate();
                         if (result > 0) {
@@ -3389,7 +3946,7 @@ public class ChuThaiUI extends JFrame {
                                 "Cập nhật hợp đồng thành công!",
                                 "Thông báo",
                                 JOptionPane.INFORMATION_MESSAGE);
-                            loadContractData(model, "Tất cả");
+                            loadContractData(contractModel, "Tất cả");
                             dialog.dispose();
                         } else {
                             JOptionPane.showMessageDialog(dialog,
@@ -3397,8 +3954,6 @@ public class ChuThaiUI extends JFrame {
                                 "Lỗi",
                                 JOptionPane.ERROR_MESSAGE);
                         }
-
-                        updateStmt.close();
                     } catch (SQLException ex) {
                         ex.printStackTrace();
                         JOptionPane.showMessageDialog(dialog,
@@ -3416,11 +3971,6 @@ public class ChuThaiUI extends JFrame {
                 dialog.add(mainPanel, BorderLayout.CENTER);
                 dialog.add(buttonPanel, BorderLayout.SOUTH);
                 dialog.setVisible(true);
-            } else {
-                JOptionPane.showMessageDialog(this,
-                    "Không tìm thấy hợp đồng hoặc hợp đồng không ở trạng thái chờ duyệt!",
-                    "Lỗi",
-                    JOptionPane.ERROR_MESSAGE);
             }
 
             rs.close();
@@ -3435,61 +3985,187 @@ public class ChuThaiUI extends JFrame {
         }
     }
 
-    // Method to delete contract detail
-    private void deleteContractDetail(String maHopDong, String tenDichVu, DefaultTableModel model) {
-        int confirm = JOptionPane.showConfirmDialog(
-            this,
-            "Bạn có chắc chắn muốn xóa chi tiết dịch vụ này không?",
-            "Xác nhận xóa",
-            JOptionPane.YES_NO_OPTION,
-            JOptionPane.WARNING_MESSAGE
-        );
-        
-        if (confirm == JOptionPane.YES_OPTION) {
+    private void showEditDetailDialog(String maHopDong, String currentDichVu, 
+                                    double currentKhoiLuong, String currentGhiChu, 
+                                    DefaultTableModel detailModel) {
+        JDialog dialog = new JDialog(this, "Sửa chi tiết hợp đồng", true);
+        dialog.setLayout(new BorderLayout(10, 10));
+        dialog.setSize(500, 300);
+        dialog.setLocationRelativeTo(this);
+
+        // Main panel
+        JPanel mainPanel = new JPanel(new GridBagLayout());
+        mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.insets = new Insets(5, 5, 5, 5);
+
+        // Chọn dịch vụ
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Chọn dịch vụ:"), gbc);
+
+        JComboBox<String> serviceBox = new JComboBox<>();
+        loadServices(serviceBox);
+        // Tìm và chọn dịch vụ hiện tại
+        for (int i = 0; i < serviceBox.getItemCount(); i++) {
+            String item = serviceBox.getItemAt(i);
+            if (item.startsWith(currentDichVu)) {
+                serviceBox.setSelectedIndex(i);
+                break;
+            }
+        }
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(serviceBox, gbc);
+
+        // Khối lượng
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Khối lượng (kg):"), gbc);
+
+        JTextField weightField = new JTextField(String.format("%.1f", currentKhoiLuong).replace('.', ','));
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(weightField, gbc);
+
+        // Thành tiền
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Thành tiền:"), gbc);
+
+        JLabel totalLabel = new JLabel("0 đ");
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(totalLabel, gbc);
+
+        // Ghi chú
+        gbc.gridx = 0;
+        gbc.gridy = 3;
+        gbc.weightx = 0;
+        mainPanel.add(new JLabel("Ghi chú:"), gbc);
+
+        JTextField noteField = new JTextField(currentGhiChu);
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        mainPanel.add(noteField, gbc);
+
+        // Add listeners for total calculation
+        serviceBox.addActionListener(e -> calculateTotal(serviceBox, weightField, totalLabel));
+        weightField.addKeyListener(new java.awt.event.KeyAdapter() {
+            public void keyTyped(java.awt.event.KeyEvent e) {
+                char c = e.getKeyChar();
+                String currentText = weightField.getText();
+                if (!((c >= '0' && c <= '9') || c == ',' || c == KeyEvent.VK_BACK_SPACE || c == KeyEvent.VK_DELETE)) {
+                    e.consume();
+                    return;
+                }
+                if (c == ',' && currentText.contains(",")) {
+                    e.consume();
+                    return;
+                }
+            }
+            
+            @Override
+            public void keyReleased(java.awt.event.KeyEvent e) {
+                calculateTotal(serviceBox, weightField, totalLabel);
+            }
+        });
+
+        // Calculate initial total
+        calculateTotal(serviceBox, weightField, totalLabel);
+
+        // Button panel
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton saveButton = new JButton("Lưu");
+        JButton cancelButton = new JButton("Hủy");
+
+        saveButton.setBackground(new Color(46, 204, 113));
+        saveButton.setForeground(Color.WHITE);
+        saveButton.setFocusPainted(false);
+
+        cancelButton.setBackground(new Color(231, 76, 60));
+        cancelButton.setForeground(Color.WHITE);
+        cancelButton.setFocusPainted(false);
+
+        saveButton.addActionListener(e -> {
             try {
+                // Validate input
+                if (serviceBox.getSelectedItem() == null || 
+                    serviceBox.getSelectedItem().toString().equals("-- Chọn dịch vụ --")) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Vui lòng chọn dịch vụ!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                String weightText = weightField.getText().trim().replace(',', '.');
+                if (weightText.isEmpty()) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Vui lòng nhập khối lượng!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                double weight = Double.parseDouble(weightText);
+                if (weight <= 0) {
+                    JOptionPane.showMessageDialog(dialog,
+                        "Khối lượng phải lớn hơn 0!",
+                        "Lỗi",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
                 Connection conn = ConnectionJDBC.getConnection();
                 conn.setAutoCommit(false);
-                
+
                 try {
-                    // Lấy mã dịch vụ từ tên dịch vụ
-                    String getMaDvSql = "SELECT MaDichVu FROM DichVu WHERE TenDichVu = ?";
-                    PreparedStatement getMaDvStmt = conn.prepareStatement(getMaDvSql);
-                    getMaDvStmt.setString(1, tenDichVu);
-                    ResultSet rs = getMaDvStmt.executeQuery();
+                    String serviceName = serviceBox.getSelectedItem().toString().split(" - ")[0];
+                    
+                    // Get MaDichVu
+                    String findServiceSql = "SELECT MaDichVu FROM DichVu WHERE TenDichVu = ?";
+                    PreparedStatement findServiceStmt = conn.prepareStatement(findServiceSql);
+                    findServiceStmt.setString(1, serviceName);
+                    ResultSet rs = findServiceStmt.executeQuery();
                     
                     if (rs.next()) {
-                        String maDichVu = rs.getString("MaDichVu");
+                        int maDichVu = rs.getInt("MaDichVu");
                         
-                        // Xóa chi tiết hợp đồng
-                        String deleteDetailSql = "DELETE FROM ChiTietHopDong WHERE MaHopDong = ? AND MaDichVu = ?";
-                        PreparedStatement deleteStmt = conn.prepareStatement(deleteDetailSql);
-                        deleteStmt.setString(1, maHopDong);
-                        deleteStmt.setString(2, maDichVu);
+                        // Update chi tiết hợp đồng
+                        String updateSql = "UPDATE ChiTietHopDong " +
+                                        "SET KhoiLuong = ?, ThanhTien = ?, GhiChu = ? " +
+                                        "WHERE MaHopDong = ? AND MaDichVu = ?";
+                        PreparedStatement pstmt = conn.prepareStatement(updateSql);
                         
-                        int rowsAffected = deleteStmt.executeUpdate();
+                        pstmt.setDouble(1, weight);
+                        pstmt.setDouble(2, Double.parseDouble(totalLabel.getText().replaceAll("[^0-9]", "")));
+                        pstmt.setString(3, noteField.getText());
+                        pstmt.setString(4, maHopDong);
+                        pstmt.setInt(5, maDichVu);
                         
-                        if (rowsAffected > 0) {
+                        int result = pstmt.executeUpdate();
+                        
+                        if (result > 0) {
                             conn.commit();
-                            JOptionPane.showMessageDialog(this,
-                                "Xóa chi tiết dịch vụ thành công!",
+                            JOptionPane.showMessageDialog(dialog,
+                                "Cập nhật chi tiết hợp đồng thành công!",
                                 "Thông báo",
                                 JOptionPane.INFORMATION_MESSAGE);
                             
                             // Refresh detail table
-                            loadContractDetails(maHopDong, model);
+                            loadContractDetails(maHopDong, detailModel);
+                            dialog.dispose();
                         } else {
-                            conn.rollback();
-                            JOptionPane.showMessageDialog(this,
-                                "Không thể xóa chi tiết dịch vụ!",
-                                "Lỗi",
-                                JOptionPane.ERROR_MESSAGE);
+                            throw new SQLException("Không thể cập nhật chi tiết hợp đồng");
                         }
-                        
-                        deleteStmt.close();
+                    } else {
+                        throw new SQLException("Không tìm thấy dịch vụ: " + serviceName);
                     }
-                    
-                    rs.close();
-                    getMaDvStmt.close();
                 } catch (SQLException ex) {
                     conn.rollback();
                     throw ex;
@@ -3497,209 +4173,22 @@ public class ChuThaiUI extends JFrame {
                     conn.setAutoCommit(true);
                     conn.close();
                 }
-            } catch (SQLException ex) {
+            } catch (SQLException | NumberFormatException ex) {
                 ex.printStackTrace();
-                JOptionPane.showMessageDialog(this,
-                    "Lỗi khi xóa chi tiết dịch vụ: " + ex.getMessage(),
+                JOptionPane.showMessageDialog(dialog,
+                    "Lỗi khi cập nhật chi tiết hợp đồng: " + ex.getMessage(),
                     "Lỗi",
                     JOptionPane.ERROR_MESSAGE);
             }
-        }
-    }
-
-    // Method to show edit detail dialog
-    private void showEditDetailDialog(String maHopDong, String tenDichVu, DefaultTableModel model) {
-        JDialog dialog = new JDialog(this, "Sửa chi tiết dịch vụ", true);
-        dialog.setLayout(new BorderLayout(10, 10));
-        dialog.setSize(400, 300);
-        dialog.setLocationRelativeTo(this);
-
-        // Main panel with GridBagLayout
-        JPanel mainPanel = new JPanel(new GridBagLayout());
-        mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.insets = new Insets(5, 5, 5, 5);
-
-        try {
-            Connection conn = ConnectionJDBC.getConnection();
-            
-            // Get service details
-            String sql = "SELECT ct.KhoiLuong, ct.GhiChu, d.DonGia " +
-                        "FROM ChiTietHopDong ct " +
-                        "JOIN DichVu d ON ct.MaDichVu = d.MaDichVu " +
-                        "JOIN HopDong h ON ct.MaHopDong = h.MaHopDong " +
-                        "WHERE ct.MaHopDong = ? AND d.TenDichVu = ? AND h.TrangThai = 'Chờ duyệt'";
-            
-            PreparedStatement pstmt = conn.prepareStatement(sql);
-            pstmt.setString(1, maHopDong);
-            pstmt.setString(2, tenDichVu);
-            ResultSet rs = pstmt.executeQuery();
-
-            if (rs.next()) {
-                // Tên dịch vụ (readonly)
-                gbc.gridx = 0;
-                gbc.gridy = 0;
-                mainPanel.add(new JLabel("Tên dịch vụ:"), gbc);
-
-                JTextField tenDvField = new JTextField(tenDichVu);
-                tenDvField.setEditable(false);
-                gbc.gridx = 1;
-                mainPanel.add(tenDvField, gbc);
-
-                // Khối lượng
-                gbc.gridx = 0;
-                gbc.gridy = 1;
-                mainPanel.add(new JLabel("Khối lượng:"), gbc);
-
-                JTextField khoiLuongField = new JTextField(String.valueOf(rs.getDouble("KhoiLuong")));
-                gbc.gridx = 1;
-                mainPanel.add(khoiLuongField, gbc);
-
-                // Đơn giá (readonly)
-                gbc.gridx = 0;
-                gbc.gridy = 2;
-                mainPanel.add(new JLabel("Đơn giá:"), gbc);
-
-                JTextField donGiaField = new JTextField(String.format("%,d", rs.getLong("DonGia")));
-                donGiaField.setEditable(false);
-                gbc.gridx = 1;
-                mainPanel.add(donGiaField, gbc);
-
-                // Ghi chú
-                gbc.gridx = 0;
-                gbc.gridy = 3;
-                mainPanel.add(new JLabel("Ghi chú:"), gbc);
-
-                JTextField ghiChuField = new JTextField(rs.getString("GhiChu"));
-                gbc.gridx = 1;
-                mainPanel.add(ghiChuField, gbc);
-
-                // Button panel
-                JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-                JButton saveButton = new JButton("Lưu thay đổi");
-                JButton cancelButton = new JButton("Hủy");
-
-                saveButton.setBackground(new Color(46, 204, 113));
-                saveButton.setForeground(Color.WHITE);
-                saveButton.setFocusPainted(false);
-
-                cancelButton.setBackground(new Color(231, 76, 60));
-                cancelButton.setForeground(Color.WHITE);
-                cancelButton.setFocusPainted(false);
-
-                saveButton.addActionListener(evt -> {
-                    try {
-                        // Validate khối lượng
-                        String khoiLuongText = khoiLuongField.getText().trim().replace(",", ".");
-                        if (khoiLuongText.isEmpty()) {
-                            JOptionPane.showMessageDialog(dialog,
-                                "Vui lòng nhập khối lượng!",
-                                "Lỗi",
-                                JOptionPane.ERROR_MESSAGE);
-                            return;
-                        }
-
-                        double khoiLuong;
-                        try {
-                            khoiLuong = Double.parseDouble(khoiLuongText);
-                            if (khoiLuong <= 0) {
-                                throw new NumberFormatException();
-                            }
-                        } catch (NumberFormatException ex) {
-                            JOptionPane.showMessageDialog(dialog,
-                                "Khối lượng không hợp lệ!",
-                                "Lỗi",
-                                JOptionPane.ERROR_MESSAGE);
-                            return;
-                        }
-
-                        // Get MaDichVu
-                        String getMaDvSql = "SELECT MaDichVu FROM DichVu WHERE TenDichVu = ?";
-                        PreparedStatement getMaDvStmt = conn.prepareStatement(getMaDvSql);
-                        getMaDvStmt.setString(1, tenDichVu);
-                        ResultSet maDvRs = getMaDvStmt.executeQuery();
-
-                        if (maDvRs.next()) {
-                            String maDichVu = maDvRs.getString("MaDichVu");
-                            double donGia = rs.getDouble("DonGia");
-                            double thanhTien = khoiLuong * donGia;
-
-                            // Update chi tiết hợp đồng
-                            String updateSql = "UPDATE ChiTietHopDong " +
-                                            "SET KhoiLuong = ?, ThanhTien = ?, GhiChu = ? " +
-                                            "WHERE MaHopDong = ? AND MaDichVu = ?";
-                            PreparedStatement updateStmt = conn.prepareStatement(updateSql);
-                            updateStmt.setDouble(1, khoiLuong);
-                            updateStmt.setDouble(2, thanhTien);
-                            updateStmt.setString(3, ghiChuField.getText().trim());
-                            updateStmt.setString(4, maHopDong);
-                            updateStmt.setString(5, maDichVu);
-
-                            int result = updateStmt.executeUpdate();
-                            if (result > 0) {
-                                JOptionPane.showMessageDialog(dialog,
-                                    "Cập nhật chi tiết dịch vụ thành công!",
-                                    "Thông báo",
-                                    JOptionPane.INFORMATION_MESSAGE);
-                                loadContractDetails(maHopDong, model);
-                                dialog.dispose();
-                            } else {
-                                JOptionPane.showMessageDialog(dialog,
-                                    "Không thể cập nhật chi tiết dịch vụ!",
-                                    "Lỗi",
-                                    JOptionPane.ERROR_MESSAGE);
-                            }
-
-                            updateStmt.close();
-                        }
-
-                        maDvRs.close();
-                        getMaDvStmt.close();
-                    } catch (SQLException ex) {
-                        ex.printStackTrace();
-                        JOptionPane.showMessageDialog(dialog,
-                            "Lỗi khi cập nhật chi tiết dịch vụ: " + ex.getMessage(),
-                            "Lỗi",
-                            JOptionPane.ERROR_MESSAGE);
-                    }
-                });
-
-                cancelButton.addActionListener(evt -> dialog.dispose());
-
-                buttonPanel.add(saveButton);
-                buttonPanel.add(cancelButton);
-
-                dialog.add(mainPanel, BorderLayout.CENTER);
-                dialog.add(buttonPanel, BorderLayout.SOUTH);
-                dialog.setVisible(true);
-            } else {
-                JOptionPane.showMessageDialog(this,
-                    "Không tìm thấy chi tiết dịch vụ hoặc hợp đồng không ở trạng thái chờ duyệt!",
-                    "Lỗi",
-                    JOptionPane.ERROR_MESSAGE);
-            }
-
-            rs.close();
-            pstmt.close();
-            conn.close();
-        } catch (SQLException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this,
-                "Lỗi khi tải thông tin chi tiết dịch vụ: " + ex.getMessage(),
-                "Lỗi",
-                JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    private String normalizeString(String input) {
-        String temp = Normalizer.normalize(input, Normalizer.Form.NFD);
-        return temp.replaceAll("\\p{InCombiningDiacriticalMarks}+", "");
-    }
-
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> {
-            new ChuThaiUI("", "").setVisible(true);
         });
+
+        cancelButton.addActionListener(e -> dialog.dispose());
+
+        buttonPanel.add(saveButton);
+        buttonPanel.add(cancelButton);
+
+        dialog.add(mainPanel, BorderLayout.CENTER);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+        dialog.setVisible(true);
     }
-}
+} 

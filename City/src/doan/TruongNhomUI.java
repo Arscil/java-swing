@@ -268,11 +268,7 @@ public class TruongNhomUI extends JFrame {
             Connection conn = ConnectionJDBC.getConnection();
             StringBuilder sql = new StringBuilder(
                 "SELECT ltg.MaLich, tuyen.TenTuyen, quan.TenQuan, ltg.NgThu, ltg.GioThu, " +
-                "CASE TO_CHAR(ltg.TrangThai) " +
-                "   WHEN '1' THEN 'Hoạt động' " +
-                "   WHEN '0' THEN 'Tạm dừng' " +
-                "   ELSE 'Không xác định' " +
-                "END as TrangThai " +
+                "ltg.TrangThai as TrangThaiLich " +
                 "FROM LichThuGom ltg " +
                 "JOIN PhanCong pc ON ltg.MaLich = pc.MaLich " +
                 "JOIN TuyenDuongThuGom tuyen ON ltg.MaTuyen = tuyen.MaTuyen " +
@@ -285,11 +281,7 @@ public class TruongNhomUI extends JFrame {
             }
 
             if (status != null && !status.equals("Tất cả")) {
-                if (status.equals("Hoạt động")) {
-                    sql.append(" AND ltg.TrangThai = 1");
-                } else if (status.equals("Tạm dừng")) {
-                    sql.append(" AND ltg.TrangThai = 0");
-                }
+                sql.append(" AND ltg.TrangThai = ?");
             }
 
             sql.append(" ORDER BY ltg.NgThu, ltg.GioThu");
@@ -304,6 +296,10 @@ public class TruongNhomUI extends JFrame {
                 pstmt.setString(paramIndex++, searchPattern);
             }
 
+            if (status != null && !status.equals("Tất cả")) {
+                pstmt.setString(paramIndex, status);
+            }
+
             ResultSet rs = pstmt.executeQuery();
             
             while (rs.next()) {
@@ -313,7 +309,7 @@ public class TruongNhomUI extends JFrame {
                     rs.getString("TenQuan"),
                     getDayOfWeek(rs.getInt("NgThu")),
                     rs.getString("GioThu"),
-                    rs.getString("TrangThai")
+                    rs.getString("TrangThaiLich")
                 };
                 model.addRow(row);
             }
@@ -662,7 +658,7 @@ public class TruongNhomUI extends JFrame {
         panel.setBackground(Color.WHITE);
 
         // Title
-        JLabel title = new JLabel("Phân Công Nhân Viên", SwingConstants.CENTER);
+        JLabel title = new JLabel("Xem Lịch Phân Công Nhân Viên", SwingConstants.CENTER);
         title.setFont(new Font("Arial", Font.BOLD, 24));
         title.setBorder(new EmptyBorder(0, 0, 20, 0));
 
@@ -676,11 +672,6 @@ public class TruongNhomUI extends JFrame {
         JButton searchButton = new JButton("Tìm kiếm");
         searchButton.setBackground(new Color(0, 123, 255));
         searchButton.setForeground(Color.WHITE);
-
-        // Add Button
-        JButton addButton = new JButton("Thêm phân công");
-        addButton.setBackground(new Color(40, 167, 69));
-        addButton.setForeground(Color.WHITE);
 
         // Refresh Button
         JButton refreshButton = new JButton("Làm mới");
@@ -700,12 +691,19 @@ public class TruongNhomUI extends JFrame {
         controlPanel.add(dayLabel);
         controlPanel.add(dayCombo);
         controlPanel.add(Box.createHorizontalStrut(20));
-        controlPanel.add(addButton);
         controlPanel.add(refreshButton);
 
         // Table
-        String[] columnNames = {"Mã PC", "Mã Lịch", "Nhân viên", "Tuyến thu gom", "Thời gian", "Trạng thái"};
-        DefaultTableModel model = new DefaultTableModel(columnNames, 0) {
+        String[] columns = {
+            "Mã phân công",
+            "Mã lịch",
+            "Tên nhân viên",
+            "Tuyến thu gom",
+            "Thứ",
+            "Giờ thu gom",
+            "Trạng thái"
+        };
+        DefaultTableModel model = new DefaultTableModel(columns, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -713,75 +711,10 @@ public class TruongNhomUI extends JFrame {
         };
 
         JTable table = new JTable(model);
-        table.setRowHeight(25);
-        table.getTableHeader().setFont(new Font("Arial", Font.BOLD, 14));
-        table.setFont(new Font("Arial", Font.PLAIN, 14));
-        
-        // Add selection listener for table
-        table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        
-        // Action buttons panel
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        actionPanel.setBackground(Color.WHITE);
-        
-        JButton editButton = new JButton("Sửa");
-        editButton.setBackground(new Color(255, 193, 7));
-        editButton.setForeground(Color.WHITE);
-        editButton.setEnabled(false);
-        
-        JButton deleteButton = new JButton("Xóa");
-        deleteButton.setBackground(new Color(220, 53, 69));
-        deleteButton.setForeground(Color.WHITE);
-        deleteButton.setEnabled(false);
-        
-        actionPanel.add(editButton);
-        actionPanel.add(deleteButton);
-        
-        // Enable/disable buttons based on selection
-        table.getSelectionModel().addListSelectionListener(e -> {
-            boolean hasSelection = table.getSelectedRow() != -1;
-            editButton.setEnabled(hasSelection);
-            deleteButton.setEnabled(hasSelection);
-        });
-        
         JScrollPane scrollPane = new JScrollPane(table);
 
         // Load initial data
         loadPhanCongData(model, null, (String)dayCombo.getSelectedItem());
-
-        // Add Button Action
-        addButton.addActionListener(e -> showPhanCongDialog(null, model, dayCombo));
-
-        // Edit Button Action
-        editButton.addActionListener(e -> {
-            int row = table.getSelectedRow();
-            if (row != -1) {
-                String maPC = table.getValueAt(row, 0).toString();
-                showPhanCongDialog(maPC, model, dayCombo);
-            }
-        });
-
-        // Delete Button Action
-        deleteButton.addActionListener(e -> {
-            int row = table.getSelectedRow();
-            if (row != -1) {
-                String maPC = table.getValueAt(row, 0).toString();
-                String tenNv = table.getValueAt(row, 2).toString();
-                String tuyenTG = table.getValueAt(row, 3).toString();
-                
-                int confirm = JOptionPane.showConfirmDialog(
-                    this,
-                    "Bạn có chắc chắn muốn xóa phân công của nhân viên " + tenNv + " cho tuyến " + tuyenTG + "?",
-                    "Xác nhận xóa",
-                    JOptionPane.YES_NO_OPTION,
-                    JOptionPane.WARNING_MESSAGE
-                );
-                
-                if (confirm == JOptionPane.YES_OPTION) {
-                    deletePhanCong(maPC, model, (String)dayCombo.getSelectedItem());
-                }
-            }
-        });
 
         // Search functionality
         searchButton.addActionListener(e -> {
@@ -812,7 +745,6 @@ public class TruongNhomUI extends JFrame {
         topPanel.setBackground(Color.WHITE);
         topPanel.add(title, BorderLayout.NORTH);
         topPanel.add(controlPanel, BorderLayout.CENTER);
-        topPanel.add(actionPanel, BorderLayout.SOUTH);
 
         panel.add(topPanel, BorderLayout.NORTH);
         panel.add(scrollPane, BorderLayout.CENTER);
@@ -826,11 +758,7 @@ public class TruongNhomUI extends JFrame {
             Connection conn = ConnectionJDBC.getConnection();
             StringBuilder sql = new StringBuilder(
                 "SELECT pc.MaPC, pc.MaLich, nv.TenNvtg, t.TenTuyen, l.NgThu, l.GioThu, " +
-                "CASE TO_CHAR(l.TrangThai) " +
-                "   WHEN '1' THEN 'Hoạt động' " +
-                "   WHEN '0' THEN 'Tạm dừng' " +
-                "   ELSE 'Không xác định' " +
-                "END as TrangThai " +
+                "l.TrangThai as TrangThaiLich " +
                 "FROM PhanCong pc " +
                 "JOIN NhanVienThuGom nv ON pc.MaNvtg = nv.MaNvtg " +
                 "JOIN LichThuGom l ON pc.MaLich = l.MaLich " +
@@ -877,8 +805,9 @@ public class TruongNhomUI extends JFrame {
                     rs.getString("MaLich"),
                     rs.getString("TenNvtg"),
                     rs.getString("TenTuyen"),
-                    thu + " " + rs.getString("GioThu"),
-                    rs.getString("TrangThai")
+                    thu,
+                    rs.getString("GioThu"),
+                    rs.getString("TrangThaiLich")
                 };
                 model.addRow(row);
             }
@@ -905,218 +834,6 @@ public class TruongNhomUI extends JFrame {
             case "Thứ 7": return 7;
             case "Chủ nhật": return 1;
             default: return -1;
-        }
-    }
-
-    private void showPhanCongDialog(String maPC, DefaultTableModel model, JComboBox<String> dayCombo) {
-        JDialog dialog = new JDialog(this, maPC == null ? "Thêm phân công" : "Sửa phân công", true);
-        dialog.setLayout(new BorderLayout(10, 10));
-        dialog.setSize(500, 400);
-        dialog.setLocationRelativeTo(this);
-
-        JPanel formPanel = new JPanel(new GridBagLayout());
-        formPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.insets = new Insets(5, 5, 5, 5);
-
-        // Employee Selection
-        gbc.gridx = 0; gbc.gridy = 0;
-        formPanel.add(new JLabel("Nhân viên:"), gbc);
-
-        JComboBox<String> employeeCombo = new JComboBox<>();
-        gbc.gridx = 1;
-        formPanel.add(employeeCombo, gbc);
-
-        // Schedule Selection
-        gbc.gridx = 0; gbc.gridy = 1;
-        formPanel.add(new JLabel("Lịch thu gom:"), gbc);
-
-        JComboBox<String> scheduleCombo = new JComboBox<>();
-        gbc.gridx = 1;
-        formPanel.add(scheduleCombo, gbc);
-
-        try {
-            Connection conn = ConnectionJDBC.getConnection();
-            
-            // Load employees
-            String empSql = "SELECT MaNvtg, TenNvtg FROM NhanVienThuGom WHERE MaTruongNhom = ?";
-            PreparedStatement empStmt = conn.prepareStatement(empSql);
-            empStmt.setString(1, maNvtg);
-            ResultSet empRs = empStmt.executeQuery();
-
-            while (empRs.next()) {
-                employeeCombo.addItem(empRs.getString("MaNvtg") + " - " + empRs.getString("TenNvtg"));
-            }
-
-            // Load schedules
-            String schSql = "SELECT l.MaLich, t.TenTuyen, l.NgThu, l.GioThu " +
-                          "FROM LichThuGom l " +
-                          "JOIN TuyenDuongThuGom t ON l.MaTuyen = t.MaTuyen " +
-                          "WHERE l.TrangThai = 'Hoạt động'";
-            PreparedStatement schStmt = conn.prepareStatement(schSql);
-            ResultSet schRs = schStmt.executeQuery();
-
-            while (schRs.next()) {
-                String thu = "Thứ " + schRs.getString("NgThu");
-                if (schRs.getString("NgThu").equals("1")) {
-                    thu = "Chủ nhật";
-                }
-                scheduleCombo.addItem(schRs.getString("MaLich") + " - " + 
-                                    schRs.getString("TenTuyen") + " (" + 
-                                    thu + " " + schRs.getString("GioThu") + ")");
-            }
-
-            // If editing, load current values
-            if (maPC != null) {
-                String loadSql = "SELECT pc.MaNvtg, pc.MaLich " +
-                               "FROM PhanCong pc " +
-                               "WHERE pc.MaPC = ?";
-                PreparedStatement loadStmt = conn.prepareStatement(loadSql);
-                loadStmt.setString(1, maPC);
-                ResultSet loadRs = loadStmt.executeQuery();
-
-                if (loadRs.next()) {
-                    String maNvtg = loadRs.getString("MaNvtg");
-                    String maLich = loadRs.getString("MaLich");
-
-                    // Set selected employee
-                    for (int i = 0; i < employeeCombo.getItemCount(); i++) {
-                        if (employeeCombo.getItemAt(i).startsWith(maNvtg)) {
-                            employeeCombo.setSelectedIndex(i);
-                            break;
-                        }
-                    }
-
-                    // Set selected schedule
-                    for (int i = 0; i < scheduleCombo.getItemCount(); i++) {
-                        if (scheduleCombo.getItemAt(i).startsWith(maLich)) {
-                            scheduleCombo.setSelectedIndex(i);
-                            break;
-                        }
-                    }
-                }
-                loadRs.close();
-                loadStmt.close();
-            }
-
-            empRs.close();
-            schRs.close();
-            empStmt.close();
-            schStmt.close();
-            conn.close();
-        } catch (SQLException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(dialog,
-                "Lỗi khi tải dữ liệu: " + ex.getMessage(),
-                "Lỗi",
-                JOptionPane.ERROR_MESSAGE);
-        }
-
-        // Buttons
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        JButton saveButton = new JButton(maPC == null ? "Thêm" : "Lưu");
-        JButton cancelButton = new JButton("Hủy");
-
-        saveButton.addActionListener(evt -> {
-            try {
-                Connection conn = ConnectionJDBC.getConnection();
-                String selectedEmployee = (String)employeeCombo.getSelectedItem();
-                String maNv = selectedEmployee.split(" - ")[0];
-                String selectedSchedule = (String)scheduleCombo.getSelectedItem();
-                String maLich = selectedSchedule.split(" - ")[0];
-
-                // Check if assignment already exists
-                String checkSql = "SELECT COUNT(*) as Count FROM PhanCong " +
-                                "WHERE MaNvtg = ? AND MaLich = ? AND MaPC != ?";
-                PreparedStatement checkStmt = conn.prepareStatement(checkSql);
-                checkStmt.setString(1, maNv);
-                checkStmt.setString(2, maLich);
-                checkStmt.setString(3, maPC != null ? maPC : "");
-                ResultSet checkRs = checkStmt.executeQuery();
-
-                if (checkRs.next() && checkRs.getInt("Count") > 0) {
-                    JOptionPane.showMessageDialog(dialog,
-                        "Nhân viên đã được phân công cho lịch thu gom này!",
-                        "Lỗi",
-                        JOptionPane.ERROR_MESSAGE);
-                    return;
-                }
-
-                if (maPC == null) {
-                    // Insert new assignment
-                    String insertSql = "INSERT INTO PhanCong (MaNvdp, MaLich, MaNvtg) VALUES (?, ?, ?)";
-                    PreparedStatement pstmt = conn.prepareStatement(insertSql);
-                    pstmt.setString(1, maNvtg);
-                    pstmt.setString(2, maLich);
-                    pstmt.setString(3, maNv);
-                    pstmt.executeUpdate();
-                    pstmt.close();
-                } else {
-                    // Update existing assignment
-                    String updateSql = "UPDATE PhanCong SET MaLich = ?, MaNvtg = ? WHERE MaPC = ?";
-                    PreparedStatement pstmt = conn.prepareStatement(updateSql);
-                    pstmt.setString(1, maLich);
-                    pstmt.setString(2, maNv);
-                    pstmt.setString(3, maPC);
-                    pstmt.executeUpdate();
-                    pstmt.close();
-                }
-
-                loadPhanCongData(model, null, (String)dayCombo.getSelectedItem());
-                dialog.dispose();
-                JOptionPane.showMessageDialog(dialog,
-                    maPC == null ? "Thêm phân công thành công!" : "Cập nhật phân công thành công!",
-                    "Thông báo",
-                    JOptionPane.INFORMATION_MESSAGE);
-
-                checkRs.close();
-                checkStmt.close();
-                conn.close();
-            } catch (SQLException ex) {
-                ex.printStackTrace();
-                JOptionPane.showMessageDialog(dialog,
-                    "Lỗi khi " + (maPC == null ? "thêm" : "cập nhật") + " phân công: " + ex.getMessage(),
-                    "Lỗi",
-                    JOptionPane.ERROR_MESSAGE);
-            }
-        });
-
-        cancelButton.addActionListener(evt -> dialog.dispose());
-
-        buttonPanel.add(saveButton);
-        buttonPanel.add(cancelButton);
-
-        dialog.add(formPanel, BorderLayout.CENTER);
-        dialog.add(buttonPanel, BorderLayout.SOUTH);
-        dialog.setVisible(true);
-    }
-
-    private void deletePhanCong(String maPC, DefaultTableModel model, String selectedDay) {
-        try {
-            Connection conn = ConnectionJDBC.getConnection();
-            String sql = "DELETE FROM PhanCong WHERE MaPC = ?";
-            
-            PreparedStatement pstmt = conn.prepareStatement(sql);
-            pstmt.setString(1, maPC);
-            
-            int result = pstmt.executeUpdate();
-            if (result > 0) {
-                loadPhanCongData(model, null, selectedDay);
-                JOptionPane.showMessageDialog(this,
-                    "Xóa phân công thành công!",
-                    "Thông báo",
-                    JOptionPane.INFORMATION_MESSAGE);
-            }
-            
-            pstmt.close();
-            conn.close();
-        } catch (SQLException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this,
-                "Lỗi khi xóa phân công: " + ex.getMessage(),
-                "Lỗi",
-                JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -1177,7 +894,8 @@ public class TruongNhomUI extends JFrame {
                     rs.getString("MaLich"),
                     rs.getString("TenNvtg"),
                     rs.getString("TenTuyen"),
-                    thu + " " + rs.getString("GioThu"),
+                    thu,
+                    rs.getString("GioThu"),
                     rs.getString("TrangThai")
                 };
                 model.addRow(row);

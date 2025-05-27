@@ -47,6 +47,9 @@ import org.jfree.data.general.DefaultPieDataset;
 import org.jfree.chart.renderer.category.BarRenderer;
 import org.jfree.chart.axis.NumberAxis;
 import java.text.DecimalFormat;
+// Thêm imports cho JDateChooser
+import com.toedter.calendar.JDateChooser;
+import com.toedter.calendar.JTextFieldDateEditor;
 
 public class QuanLyRacThaiUI extends JFrame {
     private JPanel sideBar, mainPanel, headerPanel;
@@ -6543,13 +6546,28 @@ inputPanel.add(trangThaiCombo, "combo");
         
         // Control Panel
         JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        String[] months = {"Tháng 1/2024", "Tháng 2/2024", "Tháng 3/2024"};
-        JComboBox<String> monthPicker = new JComboBox<>(months);
+        JDateChooser dateChooser = new JDateChooser();
+        // Set date format to only show month and year
+        ((JTextFieldDateEditor) dateChooser.getDateEditor()).setDateFormatString("MM/yyyy");
+        dateChooser.setPreferredSize(new Dimension(100, 30));
+        // Set default date to current date
+        dateChooser.setDate(new Date());
+        
         JButton exportButton = new JButton("Xuất báo cáo");
         styleButton(exportButton);
         controlPanel.add(new JLabel("Chọn tháng: "));
-        controlPanel.add(monthPicker);
+        controlPanel.add(dateChooser);
         controlPanel.add(exportButton);
+        
+        // Add property change listener to update charts when date changes
+        dateChooser.addPropertyChangeListener("date", e -> {
+            if (dateChooser.getDate() != null) {
+                Calendar cal = Calendar.getInstance();
+                cal.setTime(dateChooser.getDate());
+                currentMonth = cal.get(Calendar.MONTH) + 1; // Calendar months are 0-based
+                updateAllCharts();
+            }
+        });
         
         headerPanel.add(titleLabel, BorderLayout.WEST);
         headerPanel.add(controlPanel, BorderLayout.EAST);
@@ -6657,13 +6675,13 @@ inputPanel.add(trangThaiCombo, "combo");
         DefaultCategoryDataset staffDataset = new DefaultCategoryDataset();
         try {
             Connection conn = ConnectionJDBC.getConnection();
-            String staffQuery = "SELECT 'Điều phối' as ViTri, COUNT(*) as SoLuong FROM NhanVienDieuPhoi " +
+            String staffQuery = "SELECT 'Nhân viên điều phối' as LoaiNhanVien, COUNT(*) as SoLuong FROM NhanVienDieuPhoi " +
                                 "UNION ALL " +
-                                "SELECT 'Thu gom' as ViTri, COUNT(*) as SoLuong FROM NhanVienThuGom";
+                                "SELECT 'Nhân viên thu gom' as LoaiNhanVien, COUNT(*) as SoLuong FROM NhanVienThuGom";
             try (PreparedStatement pstmt = conn.prepareStatement(staffQuery)) {
                 ResultSet rs = pstmt.executeQuery();
                 while (rs.next()) {
-                    staffDataset.addValue(rs.getInt("SoLuong"), "Số lượng", rs.getString("ViTri"));
+                    staffDataset.addValue(rs.getInt("SoLuong"), "Số lượng", rs.getString("LoaiNhanVien"));
                 }
             }
         } catch (SQLException ex) {
@@ -6751,12 +6769,6 @@ inputPanel.add(trangThaiCombo, "combo");
         panel.add(headerPanel, BorderLayout.NORTH);
         panel.add(contentPanel, BorderLayout.CENTER);
         
-        monthPicker.addActionListener(e -> {
-            String selectedMonth = (String) monthPicker.getSelectedItem();
-            currentMonth = Integer.parseInt(selectedMonth.split("/")[0].substring(6));
-            updateAllCharts();
-        });
-        
         return panel;
     }
 
@@ -6796,13 +6808,13 @@ inputPanel.add(trangThaiCombo, "combo");
             
             // 3. Update staff distribution bar chart
             DefaultCategoryDataset staffDataset = new DefaultCategoryDataset();
-            String staffQuery = "SELECT 'Điều phối' as ViTri, COUNT(*) as SoLuong FROM NhanVienDieuPhoi " +
+            String staffQuery = "SELECT 'Nhân viên điều phối' as LoaiNhanVien, COUNT(*) as SoLuong FROM NhanVienDieuPhoi " +
                                 "UNION ALL " +
-                                "SELECT 'Thu gom' as ViTri, COUNT(*) as SoLuong FROM NhanVienThuGom";
+                                "SELECT 'Nhân viên thu gom' as LoaiNhanVien, COUNT(*) as SoLuong FROM NhanVienThuGom";
             try (PreparedStatement pstmt = conn.prepareStatement(staffQuery)) {
                 ResultSet rs = pstmt.executeQuery();
                 while (rs.next()) {
-                    staffDataset.addValue(rs.getInt("SoLuong"), "Số lượng", rs.getString("ViTri"));
+                    staffDataset.addValue(rs.getInt("SoLuong"), "Số lượng", rs.getString("LoaiNhanVien"));
                 }
             }
             
@@ -8374,4 +8386,3 @@ trangThaiCombo.setPreferredSize(new Dimension(150, 35));
     }
    
 }
-
